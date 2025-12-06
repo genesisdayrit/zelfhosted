@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  --sand-100: #f5efe0;
+  --sand-200: #e8dcc4;
+  --sand-300: #d4a574;
+  --sand-400: #8b7355;
+  --sand-900: #1a1612;
+  --sand-950: #0f0d0a;
+  --purple-400: #a78bfa;
+  --purple-500: #8b5cf6;
+  --green-500: #22c55e;
+}
+
+@theme inline {
+  --color-background: var(--sand-950);
+  --color-foreground: var(--sand-200);
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace;
+}
+
+body {
+  background: var(--sand-950);
+  color: var(--sand-200);
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco,
+    "Courier New", monospace;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--sand-950);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--purple-500);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--purple-400);
+}
+
+/* Selection color */
+::selection {
+  background: var(--purple-500);
+  color: var(--sand-100);
+}
+
+/* Glow effect for inputs */
+input:focus {
+  text-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+}
+
+/* Subtle CRT flicker animation */
+@keyframes flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.98;
+  }
+}
+
+body {
+  animation: flicker 0.1s infinite;
+}

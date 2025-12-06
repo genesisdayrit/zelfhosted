@@ -1,0 +1,298 @@
+"use client";
+
+import { useState, useRef, useEffect } from "react";
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+}
+
+interface NodeEvent {
+  node: string;
+  status: "running" | "complete";
+  timestamp: number;
+}
+
+export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [nodeTrace, setNodeTrace] = useState<NodeEvent[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const streamingRef = useRef(false);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || streamingRef.current) return;
+
+    if (streamingRef.current) return;
+    streamingRef.current = true;
+
+    const userMessage = input.trim();
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+    setIsStreaming(true);
+    setNodeTrace([]);
+
+    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+
+    abortControllerRef.current = new AbortController();
+
+    let accumulatedContent = "";
+
+    try {
+      const response = await fetch("http://localhost:8000/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userMessage }),
+        signal: abortControllerRef.current.signal,
+      });
+
+      if (!response.ok) throw new Error("Failed to fetch");
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) throw new Error("No reader available");
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              if (data.type === "node_start") {
+                setNodeTrace((prev) => [
+                  ...prev,
+                  { node: data.node, status: "running", timestamp: Date.now() },
+                ]);
+              } else if (data.type === "token") {
+                accumulatedContent += data.content;
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const lastMessage = updated[updated.length - 1];
+                  if (lastMessage?.role === "assistant") {
+                    lastMessage.content = accumulatedContent;
+                  }
+                  return updated;
+                });
+              } else if (data.type === "node_complete") {
+                setNodeTrace((prev) =>
+                  prev.map((event) =>
+                    event.node === data.node && event.status === "running"
+                      ? { ...event, status: "complete" }
+                      : event
+                  )
+                );
+              } else if (data.type === "done") {
+                setIsStreaming(false);
+              }
+            } catch {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if ((error as Error).name === "AbortError") {
+        return;
+      }
+      console.error("Error:", error);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastMessage = updated[updated.length - 1];
+        if (lastMessage?.role === "assistant") {
+          lastMessage.content = "ERROR: Connection failed. Try again.";
+        }
+        return updated;
+      });
+    } finally {
+      setIsStreaming(false);
+      streamingRef.current = false;
+    }
+  };
+
+  return (
+    <div className="relative flex min-h-screen flex-col bg-[#1a1612] font-mono">
+      {/* Scanline overlay */}
+      <div
+        className="pointer-events-none fixed inset-0 z-50"
+        style={{
+          background:
+            "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.1) 2px, rgba(0,0,0,0.1) 4px)",
+        }}
+      />
+
+      {/* Header */}
+      <header className="border-b-2 border-[#8b5cf6]/30 bg-[#1a1612] px-4 py-3">
+        <div className="mx-auto flex max-w-3xl items-center gap-3">
+          <div className="flex gap-1.5">
+            <span className="h-3 w-3 rounded-full bg-[#ef4444]" />
+            <span className="h-3 w-3 rounded-full bg-[#d4a574]" />
+            <span className="h-3 w-3 rounded-full bg-[#22c55e]" />
+          </div>
+          <span className="text-sm text-[#d4a574]">
+            zelfhosted@terminal:~$
+          </span>
+          <span className="animate-pulse text-[#22c55e]">▋</span>
+        </div>
+      </header>
+
+      {/* Messages area */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl px-4 py-6">
+          {messages.length === 0 ? (
+            <div className="flex h-[60vh] flex-col items-center justify-center text-center">
+              <pre className="mb-6 text-[#8b5cf6] text-xs leading-tight">
+{`
+    ╔═══════════════════════════╗
+    ║                           ║
+    ║     ░▀▀█░█▀▀░█░░░█▀▀░     ║
+    ║     ░▄▀░░█▀▀░█░░░█▀░░     ║
+    ║     ░▀▀▀░▀▀▀░▀▀▀░▀░░░     ║
+    ║                           ║
+    ╚═══════════════════════════╝
+`}
+              </pre>
+              <p className="text-[#d4a574]">
+                {">"} SYSTEM READY. ENTER QUERY TO BEGIN_
+              </p>
+              <p className="mt-2 text-xs text-[#8b7355]">
+                [LangGraph Neural Interface v0.1.0]
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {messages.map((message, index) => (
+                <div key={index} className="space-y-2">
+                  {/* Node execution trace */}
+                  {message.role === "assistant" &&
+                    index === messages.length - 1 &&
+                    nodeTrace.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1 border-l-2 border-[#8b5cf6]/50 pl-3 text-xs">
+                        <span className="text-[#8b7355]">[TRACE]</span>
+                        {nodeTrace.map((event, i) => (
+                          <div
+                            key={`${event.node}-${event.timestamp}`}
+                            className="flex items-center"
+                          >
+                            {i > 0 && (
+                              <span className="mx-1 text-[#8b7355]">→</span>
+                            )}
+                            <span
+                              className={`flex items-center gap-1 rounded border px-2 py-0.5 ${
+                                event.status === "running"
+                                  ? "border-[#d4a574] bg-[#d4a574]/10 text-[#d4a574]"
+                                  : "border-[#22c55e] bg-[#22c55e]/10 text-[#22c55e]"
+                              }`}
+                            >
+                              {event.status === "running" ? (
+                                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#d4a574]" />
+                              ) : (
+                                <span className="text-[#22c55e]">✓</span>
+                              )}
+                              {event.node}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                  {/* Message */}
+                  <div
+                    className={`border-l-2 pl-3 ${
+                      message.role === "user"
+                        ? "border-[#8b5cf6]"
+                        : "border-[#22c55e]"
+                    }`}
+                  >
+                    <div className="mb-1 flex items-center gap-2 text-xs">
+                      <span
+                        className={
+                          message.role === "user"
+                            ? "text-[#8b5cf6]"
+                            : "text-[#22c55e]"
+                        }
+                      >
+                        {message.role === "user" ? "USER" : "SYSTEM"}
+                      </span>
+                      <span className="text-[#8b7355]">
+                        {new Date().toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-[#e8dcc4] leading-relaxed">
+                      {message.content}
+                      {message.role === "assistant" &&
+                        isStreaming &&
+                        index === messages.length - 1 && (
+                          <span className="ml-0.5 inline-block animate-pulse text-[#22c55e]">
+                            ▋
+                          </span>
+                        )}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Input area */}
+      <div className="border-t-2 border-[#8b5cf6]/30 bg-[#1a1612] p-4">
+        <form onSubmit={handleSubmit} className="mx-auto max-w-3xl">
+          <div className="flex items-center gap-2 rounded border-2 border-[#8b5cf6]/50 bg-[#0f0d0a] px-3 py-2 focus-within:border-[#8b5cf6] focus-within:shadow-[0_0_10px_rgba(139,92,246,0.3)]">
+            <span className="text-[#22c55e]">{">"}</span>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Enter command..."
+              disabled={isStreaming}
+              className="flex-1 bg-transparent text-[#e8dcc4] placeholder-[#8b7355] outline-none disabled:opacity-50"
+            />
+            {isStreaming ? (
+              <span className="flex items-center gap-1 text-xs text-[#d4a574]">
+                <span className="inline-block h-2 w-2 animate-spin rounded-full border border-[#d4a574] border-t-transparent" />
+                PROCESSING
+              </span>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="text-xs text-[#8b5cf6] transition-colors hover:text-[#a78bfa] disabled:opacity-30"
+              >
+                [ENTER]
+              </button>
+            )}
+          </div>
+          <p className="mt-2 text-center text-xs text-[#8b7355]">
+            Press ENTER to execute • ESC to cancel
+          </p>
+        </form>
+      </div>
+    </div>
+  );
+}
