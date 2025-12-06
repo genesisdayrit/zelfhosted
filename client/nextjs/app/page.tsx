@@ -23,6 +23,7 @@ interface TraceEvent {
 const TOOL_ICONS: Record<string, string> = {
   get_weather: "🌤️",
   get_polymarket_opportunities: "📈",
+  get_arxiv_articles: "📚",
   default: "⚡",
 };
 
