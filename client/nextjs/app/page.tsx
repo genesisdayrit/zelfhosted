@@ -27,6 +27,127 @@ const TOOL_ICONS: Record<string, string> = {
   default: "⚡",
 };
 
+// Terminal-styled markdown renderer
+function TerminalMarkdown({ content }: { content: string }) {
+  // Parse markdown and render with terminal styling
+  const renderContent = (text: string) => {
+    const elements: React.ReactNode[] = [];
+    let key = 0;
+
+    // Split by lines first to handle line breaks
+    const lines = text.split("\n");
+
+    lines.forEach((line, lineIndex) => {
+      if (lineIndex > 0) {
+        elements.push(<br key={`br-${key++}`} />);
+      }
+
+      // Process each line for inline markdown
+      let remaining = line;
+      const lineElements: React.ReactNode[] = [];
+
+      while (remaining.length > 0) {
+        // Check for bold with link: **[text](url)**
+        const boldLinkMatch = remaining.match(
+          /^\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/
+        );
+        if (boldLinkMatch) {
+          lineElements.push(
+            <a
+              key={key++}
+              href={boldLinkMatch[2]}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#8b5cf6] hover:text-[#a78bfa] underline underline-offset-2"
+            >
+              {boldLinkMatch[1]}
+            </a>
+          );
+          remaining = remaining.slice(boldLinkMatch[0].length);
+          continue;
+        }
+
+        // Check for link: [text](url)
+        const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
+        if (linkMatch) {
+          lineElements.push(
+            <a
+              key={key++}
+              href={linkMatch[2]}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[#06b6d4] hover:text-[#22d3ee] underline underline-offset-2"
+            >
+              {linkMatch[1]}
+            </a>
+          );
+          remaining = remaining.slice(linkMatch[0].length);
+          continue;
+        }
+
+        // Check for bold: **text**
+        const boldMatch = remaining.match(/^\*\*([^*]+)\*\*/);
+        if (boldMatch) {
+          lineElements.push(
+            <span key={key++} className="text-[#d4a574] font-semibold">
+              {boldMatch[1]}
+            </span>
+          );
+          remaining = remaining.slice(boldMatch[0].length);
+          continue;
+        }
+
+        // Check for italic: _text_ or *text*
+        const italicMatch = remaining.match(/^[_*]([^_*]+)[_*]/);
+        if (italicMatch) {
+          lineElements.push(
+            <span key={key++} className="text-[#8b7355] italic">
+              {italicMatch[1]}
+            </span>
+          );
+          remaining = remaining.slice(italicMatch[0].length);
+          continue;
+        }
+
+        // Check for inline code: `code`
+        const codeMatch = remaining.match(/^`([^`]+)`/);
+        if (codeMatch) {
+          lineElements.push(
+            <code
+              key={key++}
+              className="bg-[#2a2520] text-[#22c55e] px-1.5 py-0.5 rounded text-sm"
+            >
+              {codeMatch[1]}
+            </code>
+          );
+          remaining = remaining.slice(codeMatch[0].length);
+          continue;
+        }
+
+        // No match - consume one character
+        const nextSpecial = remaining.search(/[\[*_`]/);
+        if (nextSpecial === -1) {
+          lineElements.push(remaining);
+          remaining = "";
+        } else if (nextSpecial === 0) {
+          // Special char that didn't match a pattern - treat as text
+          lineElements.push(remaining[0]);
+          remaining = remaining.slice(1);
+        } else {
+          lineElements.push(remaining.slice(0, nextSpecial));
+          remaining = remaining.slice(nextSpecial);
+        }
+      }
+
+      elements.push(...lineElements);
+    });
+
+    return elements;
+  };
+
+  return <>{renderContent(content)}</>;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -352,8 +473,8 @@ export default function Home() {
                         {new Date().toLocaleTimeString()}
                       </span>
                     </div>
-                    <p className="whitespace-pre-wrap text-[#e8dcc4] leading-relaxed">
-                      {message.content}
+                    <div className="text-[#e8dcc4] leading-relaxed">
+                      <TerminalMarkdown content={message.content} />
                       {message.role === "assistant" &&
                         isStreaming &&
                         index === messages.length - 1 && (
@@ -361,7 +482,7 @@ export default function Home() {
                             ▋
                           </span>
                         )}
-                    </p>
+                    </div>
                   </div>
                 </div>
               ))}
