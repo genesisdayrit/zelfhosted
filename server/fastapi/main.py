@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Annotated
+from typing import Annotated, Literal
 from typing_extensions import TypedDict
 import json
 from dotenv import load_dotenv
@@ -11,6 +11,8 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.config import get_stream_writer
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import ToolMessage
 
 load_dotenv()
 
@@ -30,6 +32,37 @@ app.add_middleware(
 )
 
 
+# --- Tools ---
+
+
+@tool
+def get_weather(location: str) -> str:
+    """Get the current weather for a location.
+
+    Args:
+        location: The city and state, e.g. "San Francisco, CA"
+    """
+    # Fake implementation - replace with real API call later
+    weather_data = {
+        "San Francisco, CA": "Foggy, 58°F",
+        "San Francisco": "Foggy, 58°F",
+        "New York, NY": "Sunny, 72°F",
+        "New York": "Sunny, 72°F",
+        "Seattle, WA": "Rainy, 52°F",
+        "Seattle": "Rainy, 52°F",
+        "Los Angeles, CA": "Sunny, 85°F",
+        "Los Angeles": "Sunny, 85°F",
+        "Chicago, IL": "Windy, 65°F",
+        "Chicago": "Windy, 65°F",
+    }
+    return weather_data.get(location, f"Weather data not available for {location}")
+
+
+# Register all tools
+tools = [get_weather]
+tools_by_name = {t.name: t for t in tools}
+
+
 # --- LangGraph Setup ---
 
 
@@ -39,23 +72,70 @@ class State(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-# Initialize the LLM with streaming enabled
+# Initialize the LLM with tools bound
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
+llm_with_tools = llm.bind_tools(tools)
 
 
 def chatbot(state: State):
-    """Process messages through the LLM."""
+    """LLM decides whether to call a tool or respond directly."""
     writer = get_stream_writer()
     writer({"type": "node_start", "node": "chatbot"})
 
-    return {"messages": [llm.invoke(state["messages"])]}
+    return {"messages": [llm_with_tools.invoke(state["messages"])]}
+
+
+def tool_node(state: State):
+    """Execute the tool calls made by the LLM."""
+    writer = get_stream_writer()
+    results = []
+    
+    for tool_call in state["messages"][-1].tool_calls:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        
+        # Emit tool_call event before execution
+        writer({
+            "type": "tool_call",
+            "tool": tool_name,
+            "args": tool_args,
+        })
+        
+        # Execute the tool
+        tool_fn = tools_by_name[tool_name]
+        result = tool_fn.invoke(tool_args)
+        
+        # Emit tool_result event after execution
+        writer({
+            "type": "tool_result",
+            "tool": tool_name,
+            "result": str(result),
+        })
+        
+        results.append(
+            ToolMessage(content=str(result), tool_call_id=tool_call["id"])
+        )
+    
+    return {"messages": results}
+
+
+def should_continue(state: State) -> Literal["tool_node", "__end__"]:
+    """Route to tool_node if LLM made tool calls, otherwise end."""
+    last_message = state["messages"][-1]
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tool_node"
+    return "__end__"
 
 
 # Build the graph
 graph_builder = StateGraph(State)
 graph_builder.add_node("chatbot", chatbot)
+graph_builder.add_node("tool_node", tool_node)
+
 graph_builder.add_edge(START, "chatbot")
-graph_builder.add_edge("chatbot", END)
+graph_builder.add_conditional_edges("chatbot", should_continue, ["tool_node", "__end__"])
+graph_builder.add_edge("tool_node", "chatbot")  # Loop back after tool execution
+
 graph = graph_builder.compile()
 
 

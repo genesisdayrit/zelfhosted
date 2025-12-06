@@ -7,17 +7,28 @@ interface Message {
   content: string;
 }
 
-interface NodeEvent {
-  node: string;
+interface TraceEvent {
+  id: string;
+  type: "node" | "tool";
+  name: string;
   status: "running" | "complete";
   timestamp: number;
+  // Tool-specific fields
+  args?: Record<string, unknown>;
+  result?: string;
 }
+
+// Tool icons mapping
+const TOOL_ICONS: Record<string, string> = {
+  get_weather: "🌤️",
+  default: "⚡",
+};
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  const [nodeTrace, setNodeTrace] = useState<NodeEvent[]>([]);
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
@@ -47,7 +58,7 @@ export default function Home() {
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     setIsStreaming(true);
-    setNodeTrace([]);
+    setTraceEvents([]);
 
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
@@ -83,10 +94,38 @@ export default function Home() {
               const data = JSON.parse(line.slice(6));
 
               if (data.type === "node_start") {
-                setNodeTrace((prev) => [
+                setTraceEvents((prev) => [
                   ...prev,
-                  { node: data.node, status: "running", timestamp: Date.now() },
+                  {
+                    id: `node-${data.node}-${Date.now()}`,
+                    type: "node",
+                    name: data.node,
+                    status: "running",
+                    timestamp: Date.now(),
+                  },
                 ]);
+              } else if (data.type === "tool_call") {
+                setTraceEvents((prev) => [
+                  ...prev,
+                  {
+                    id: `tool-${data.tool}-${Date.now()}`,
+                    type: "tool",
+                    name: data.tool,
+                    status: "running",
+                    timestamp: Date.now(),
+                    args: data.args,
+                  },
+                ]);
+              } else if (data.type === "tool_result") {
+                setTraceEvents((prev) =>
+                  prev.map((event) =>
+                    event.type === "tool" &&
+                    event.name === data.tool &&
+                    event.status === "running"
+                      ? { ...event, status: "complete", result: data.result }
+                      : event
+                  )
+                );
               } else if (data.type === "token") {
                 accumulatedContent += data.content;
                 setMessages((prev) => {
@@ -98,9 +137,11 @@ export default function Home() {
                   return updated;
                 });
               } else if (data.type === "node_complete") {
-                setNodeTrace((prev) =>
+                setTraceEvents((prev) =>
                   prev.map((event) =>
-                    event.node === data.node && event.status === "running"
+                    event.type === "node" &&
+                    event.name === data.node &&
+                    event.status === "running"
                       ? { ...event, status: "complete" }
                       : event
                   )
@@ -131,6 +172,12 @@ export default function Home() {
       setIsStreaming(false);
       streamingRef.current = false;
     }
+  };
+
+  const formatToolArgs = (args: Record<string, unknown>) => {
+    return Object.entries(args)
+      .map(([key, value]) => `${key}: "${value}"`)
+      .join(", ");
   };
 
   return (
@@ -186,36 +233,105 @@ export default function Home() {
             <div className="space-y-4">
               {messages.map((message, index) => (
                 <div key={index} className="space-y-2">
-                  {/* Node execution trace */}
+                  {/* Execution trace */}
                   {message.role === "assistant" &&
                     index === messages.length - 1 &&
-                    nodeTrace.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1 border-l-2 border-[#8b5cf6]/50 pl-3 text-xs">
-                        <span className="text-[#8b7355]">[TRACE]</span>
-                        {nodeTrace.map((event, i) => (
-                          <div
-                            key={`${event.node}-${event.timestamp}`}
-                            className="flex items-center"
-                          >
-                            {i > 0 && (
-                              <span className="mx-1 text-[#8b7355]">→</span>
-                            )}
-                            <span
-                              className={`flex items-center gap-1 rounded border px-2 py-0.5 ${
-                                event.status === "running"
-                                  ? "border-[#d4a574] bg-[#d4a574]/10 text-[#d4a574]"
-                                  : "border-[#22c55e] bg-[#22c55e]/10 text-[#22c55e]"
-                              }`}
+                    traceEvents.length > 0 && (
+                      <div className="space-y-2 border-l-2 border-[#8b5cf6]/50 pl-3">
+                        <span className="text-xs text-[#8b7355]">[TRACE]</span>
+                        
+                        {/* Compact trace flow */}
+                        <div className="flex flex-wrap items-center gap-1 text-xs">
+                          {traceEvents.map((event, i) => (
+                            <div
+                              key={event.id}
+                              className="flex items-center"
                             >
-                              {event.status === "running" ? (
-                                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#d4a574]" />
-                              ) : (
-                                <span className="text-[#22c55e]">✓</span>
+                              {i > 0 && (
+                                <span className="mx-1 text-[#8b7355]">→</span>
                               )}
-                              {event.node}
-                            </span>
+                              {event.type === "node" ? (
+                                <span
+                                  className={`flex items-center gap-1 rounded border px-2 py-0.5 ${
+                                    event.status === "running"
+                                      ? "border-[#d4a574] bg-[#d4a574]/10 text-[#d4a574]"
+                                      : "border-[#22c55e] bg-[#22c55e]/10 text-[#22c55e]"
+                                  }`}
+                                >
+                                  {event.status === "running" ? (
+                                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#d4a574]" />
+                                  ) : (
+                                    <span>✓</span>
+                                  )}
+                                  {event.name}
+                                </span>
+                              ) : (
+                                <span
+                                  className={`flex items-center gap-1 rounded border px-2 py-0.5 ${
+                                    event.status === "running"
+                                      ? "border-[#f59e0b] bg-[#f59e0b]/10 text-[#f59e0b]"
+                                      : "border-[#06b6d4] bg-[#06b6d4]/10 text-[#06b6d4]"
+                                  }`}
+                                >
+                                  <span>{TOOL_ICONS[event.name] || TOOL_ICONS.default}</span>
+                                  {event.name}
+                                  {event.status === "running" ? (
+                                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#f59e0b]" />
+                                  ) : (
+                                    <span>✓</span>
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Tool details panel */}
+                        {traceEvents.some((e) => e.type === "tool") && (
+                          <div className="mt-2 space-y-1.5">
+                            {traceEvents
+                              .filter((e) => e.type === "tool")
+                              .map((tool) => (
+                                <div
+                                  key={tool.id}
+                                  className="rounded border border-[#06b6d4]/30 bg-[#06b6d4]/5 p-2 text-xs"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-lg">
+                                      {TOOL_ICONS[tool.name] || TOOL_ICONS.default}
+                                    </span>
+                                    <span className="font-semibold text-[#06b6d4]">
+                                      {tool.name}
+                                    </span>
+                                    {tool.status === "running" ? (
+                                      <span className="flex items-center gap-1 text-[#f59e0b]">
+                                        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#f59e0b]" />
+                                        executing...
+                                      </span>
+                                    ) : (
+                                      <span className="text-[#22c55e]">✓ complete</span>
+                                    )}
+                                  </div>
+                                  {tool.args && (
+                                    <div className="mt-1 text-[#8b7355]">
+                                      <span className="text-[#a78bfa]">args:</span>{" "}
+                                      <span className="text-[#e8dcc4]">
+                                        {formatToolArgs(tool.args)}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {tool.result && (
+                                    <div className="mt-1 text-[#8b7355]">
+                                      <span className="text-[#a78bfa]">result:</span>{" "}
+                                      <span className="text-[#22c55e]">
+                                        &quot;{tool.result}&quot;
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
                           </div>
-                        ))}
+                        )}
                       </div>
                     )}
 
