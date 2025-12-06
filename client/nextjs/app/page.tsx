@@ -22,6 +22,7 @@ interface TraceEvent {
 // Tool icons mapping
 const TOOL_ICONS: Record<string, string> = {
   get_weather: "🌤️",
+  get_polymarket_opportunities: "📈",
   default: "⚡",
 };
 
