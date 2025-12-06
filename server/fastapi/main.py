@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Annotated, Literal
 from typing_extensions import TypedDict
 import json
+import httpx
 from dotenv import load_dotenv
 
 from langgraph.graph import StateGraph, START, END
@@ -12,9 +13,12 @@ from langgraph.graph.message import add_messages
 from langgraph.config import get_stream_writer
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessageChunk
 
 load_dotenv()
+
+# HTTP client for external API calls
+http_client = httpx.Client(timeout=10.0)
 
 app = FastAPI(
     title="Zelfhosted API",
@@ -35,6 +39,85 @@ app.add_middleware(
 # --- Tools ---
 
 
+def geocode_location(location: str) -> tuple[float, float, str] | None:
+    """Convert a location name to coordinates using Open-Meteo Geocoding API.
+    
+    Returns (latitude, longitude, display_name) or None if not found.
+    """
+    # Clean up US-style "City, STATE" formats - try the city name first
+    search_name = location
+    if "," in location:
+        # Extract just the city name for better geocoding results
+        city_part = location.split(",")[0].strip()
+        search_name = city_part
+    
+    response = http_client.get(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": search_name, "count": 1, "language": "en", "format": "json"},
+    )
+    
+    if response.status_code != 200:
+        return None
+    
+    data = response.json()
+    if not data.get("results"):
+        # If city-only search failed, try the original location string
+        if search_name != location:
+            response = http_client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": location, "count": 1, "language": "en", "format": "json"},
+            )
+            if response.status_code == 200:
+                data = response.json()
+        
+        if not data.get("results"):
+            return None
+    
+    result = data["results"][0]
+    display_name = result.get("name", location)
+    if result.get("admin1"):  # State/region
+        display_name += f", {result['admin1']}"
+    if result.get("country"):
+        display_name += f", {result['country']}"
+    
+    return (result["latitude"], result["longitude"], display_name)
+
+
+def get_weather_code_description(code: int) -> str:
+    """Convert WMO weather code to human-readable description."""
+    weather_codes = {
+        0: "Clear sky",
+        1: "Mainly clear",
+        2: "Partly cloudy",
+        3: "Overcast",
+        45: "Foggy",
+        48: "Depositing rime fog",
+        51: "Light drizzle",
+        53: "Moderate drizzle",
+        55: "Dense drizzle",
+        56: "Light freezing drizzle",
+        57: "Dense freezing drizzle",
+        61: "Slight rain",
+        63: "Moderate rain",
+        65: "Heavy rain",
+        66: "Light freezing rain",
+        67: "Heavy freezing rain",
+        71: "Slight snow",
+        73: "Moderate snow",
+        75: "Heavy snow",
+        77: "Snow grains",
+        80: "Slight rain showers",
+        81: "Moderate rain showers",
+        82: "Violent rain showers",
+        85: "Slight snow showers",
+        86: "Heavy snow showers",
+        95: "Thunderstorm",
+        96: "Thunderstorm with slight hail",
+        99: "Thunderstorm with heavy hail",
+    }
+    return weather_codes.get(code, "Unknown conditions")
+
+
 @tool
 def get_weather(location: str) -> str:
     """Get the current weather for a location.
@@ -42,20 +125,39 @@ def get_weather(location: str) -> str:
     Args:
         location: The city and state, e.g. "San Francisco, CA"
     """
-    # Fake implementation - replace with real API call later
-    weather_data = {
-        "San Francisco, CA": "Foggy, 58°F",
-        "San Francisco": "Foggy, 58°F",
-        "New York, NY": "Sunny, 72°F",
-        "New York": "Sunny, 72°F",
-        "Seattle, WA": "Rainy, 52°F",
-        "Seattle": "Rainy, 52°F",
-        "Los Angeles, CA": "Sunny, 85°F",
-        "Los Angeles": "Sunny, 85°F",
-        "Chicago, IL": "Windy, 65°F",
-        "Chicago": "Windy, 65°F",
-    }
-    return weather_data.get(location, f"Weather data not available for {location}")
+    # First, geocode the location to get coordinates
+    geo_result = geocode_location(location)
+    if not geo_result:
+        return f"Could not find location: {location}"
+    
+    lat, lon, display_name = geo_result
+    
+    # Fetch current weather from Open-Meteo API
+    response = http_client.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": lat,
+            "longitude": lon,
+            "current": ["temperature_2m", "relative_humidity_2m", "weather_code", "wind_speed_10m"],
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+        },
+    )
+    
+    if response.status_code != 200:
+        return f"Error fetching weather data for {location}"
+    
+    data = response.json()
+    current = data.get("current", {})
+    
+    temp = current.get("temperature_2m", "N/A")
+    humidity = current.get("relative_humidity_2m", "N/A")
+    weather_code = current.get("weather_code", 0)
+    wind_speed = current.get("wind_speed_10m", "N/A")
+    
+    condition = get_weather_code_description(weather_code)
+    
+    return f"{display_name}: {condition}, {temp}°F, Humidity: {humidity}%, Wind: {wind_speed} mph"
 
 
 # Register all tools
@@ -186,9 +288,10 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps(chunk)}\n\n"
 
             elif mode == "messages":
-                # chunk is a tuple: (AIMessageChunk, metadata)
+                # chunk is a tuple: (MessageChunk, metadata)
                 msg_chunk, metadata = chunk
-                if hasattr(msg_chunk, "content") and msg_chunk.content:
+                # Only stream AI message tokens, not tool results
+                if isinstance(msg_chunk, AIMessageChunk) and msg_chunk.content:
                     event = {
                         "type": "token",
                         "content": msg_chunk.content,

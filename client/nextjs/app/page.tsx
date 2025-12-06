@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { ZELF_LOGO } from "./ascii-art-logo";
 
 interface Message {
   role: "user" | "assistant";
@@ -212,15 +213,7 @@ export default function Home() {
           {messages.length === 0 ? (
             <div className="flex h-[60vh] flex-col items-center justify-center text-center">
               <pre className="mb-6 text-[#8b5cf6] text-xs leading-tight">
-{`
-    ╔═══════════════════════════╗
-    ║                           ║
-    ║     ░▀▀█░█▀▀░█░░░█▀▀░     ║
-    ║     ░▄▀░░█▀▀░█░░░█▀░░     ║
-    ║     ░▀▀▀░▀▀▀░▀▀▀░▀░░░     ║
-    ║                           ║
-    ╚═══════════════════════════╝
-`}
+                {ZELF_LOGO}
               </pre>
               <p className="text-[#d4a574]">
                 {">"} SYSTEM READY. ENTER QUERY TO BEGIN_
