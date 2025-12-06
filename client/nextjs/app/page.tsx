@@ -24,6 +24,7 @@ const TOOL_ICONS: Record<string, string> = {
   get_weather: "🌤️",
   get_polymarket_opportunities: "📈",
   get_arxiv_articles: "📚",
+  get_latest_photos: "📷",
   default: "⚡",
 };
 
@@ -47,6 +48,21 @@ function TerminalMarkdown({ content }: { content: string }) {
       const lineElements: React.ReactNode[] = [];
 
       while (remaining.length > 0) {
+        // Check for image: ![alt](url)
+        const imageMatch = remaining.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
+        if (imageMatch) {
+          lineElements.push(
+            <img
+              key={key++}
+              src={imageMatch[2]}
+              alt={imageMatch[1]}
+              className="my-2 max-w-full rounded-lg border border-[#8b5cf6]/30 shadow-lg"
+            />
+          );
+          remaining = remaining.slice(imageMatch[0].length);
+          continue;
+        }
+
         // Check for bold with link: **[text](url)**
         const boldLinkMatch = remaining.match(
           /^\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/
@@ -125,7 +141,7 @@ function TerminalMarkdown({ content }: { content: string }) {
         }
 
         // No match - consume one character
-        const nextSpecial = remaining.search(/[\[*_`]/);
+        const nextSpecial = remaining.search(/[!\[*_`]/);
         if (nextSpecial === -1) {
           lineElements.push(remaining);
           remaining = "";
@@ -319,7 +335,20 @@ export default function Home() {
       <header className="border-b-2 border-[#8b5cf6]/30 bg-[#1a1612] px-4 py-3">
         <div className="mx-auto flex max-w-3xl items-center gap-3">
           <div className="flex gap-1.5">
-            <span className="h-3 w-3 rounded-full bg-[#ef4444]" />
+            <button
+              onClick={() => {
+                if (isStreaming) {
+                  abortControllerRef.current?.abort();
+                }
+                setMessages([]);
+                setTraceEvents([]);
+                setInput("");
+                setIsStreaming(false);
+                streamingRef.current = false;
+              }}
+              className="h-3 w-3 rounded-full bg-[#ef4444] hover:bg-[#f87171] transition-colors cursor-pointer"
+              title="Clear chat"
+            />
             <span className="h-3 w-3 rounded-full bg-[#d4a574]" />
             <span className="h-3 w-3 rounded-full bg-[#22c55e]" />
           </div>
