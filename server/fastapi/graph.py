@@ -10,7 +10,6 @@ from langchain_core.messages import ToolMessage
 
 from tools import tools, tools_by_name
 
-# Load environment variables before initializing LLM
 load_dotenv()
 
 
