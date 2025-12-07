@@ -7,7 +7,12 @@ via the nyct-gtfs library. No API key required!
 https://github.com/Andrew-Dickinson/nyct-gtfs
 """
 
+import csv
+import math
 import re
+from pathlib import Path
+
+import httpx
 from langchain_core.tools import tool
 
 VALID_LINES = [
@@ -65,6 +70,99 @@ STREET_TYPES = {
     "court", "ct",
 }
 
+
+# ============================================================================
+# Station Coordinate Data (from MTA GTFS stops.txt)
+# ============================================================================
+
+def load_station_coordinates() -> dict[str, dict]:
+    """Load station coordinates from stops.txt."""
+    stations = {}
+    stops_file = Path(__file__).parent / "data" / "stops.txt"
+
+    if not stops_file.exists():
+        return stations
+
+    with open(stops_file, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # Only include parent stations (location_type=1) to avoid duplicates
+            if row.get("location_type") == "1":
+                stations[row["stop_id"]] = {
+                    "name": row["stop_name"],
+                    "lat": float(row["stop_lat"]),
+                    "lon": float(row["stop_lon"]),
+                    "stop_id": row["stop_id"],
+                }
+    return stations
+
+
+# Load station coordinates once at module import
+STATION_COORDS = load_station_coordinates()
+
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance in km between two coordinates using Haversine formula."""
+    R = 6371  # Earth's radius in km
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+def find_nearest_stations(lat: float, lon: float, n: int = 5) -> list[dict]:
+    """Find the n nearest subway stations to given coordinates."""
+    stations_with_dist = []
+
+    for stop_id, station in STATION_COORDS.items():
+        dist = haversine_distance(lat, lon, station["lat"], station["lon"])
+        stations_with_dist.append({
+            **station,
+            "distance_km": round(dist, 2),
+            "distance_mi": round(dist * 0.621371, 2),
+        })
+
+    stations_with_dist.sort(key=lambda x: x["distance_km"])
+    return stations_with_dist[:n]
+
+
+def geocode_location(location: str) -> tuple[float, float, str] | None:
+    """Convert a location name to coordinates using Open-Meteo Geocoding API."""
+    # Add "NYC" context if not present for better results
+    search_query = location
+    if "nyc" not in location.lower() and "new york" not in location.lower():
+        search_query = f"{location}, New York City"
+
+    try:
+        response = httpx.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": search_query, "count": 1, "language": "en", "format": "json"},
+            timeout=10.0,
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        if not data.get("results"):
+            return None
+
+        result = data["results"][0]
+        display_name = result.get("name", location)
+        if result.get("admin1"):
+            display_name += f", {result['admin1']}"
+
+        return (result["latitude"], result["longitude"], display_name)
+    except Exception:
+        return None
+
+
+# ============================================================================
+# Station Name Matching Utilities
+# ============================================================================
 
 def normalize_station_name(name: str) -> str:
     """Normalize station name for better matching."""
@@ -151,6 +249,10 @@ def find_matching_stations(query: str, stop_names: list[str]) -> list[str]:
 
     return unique_matches
 
+
+# ============================================================================
+# Tools
+# ============================================================================
 
 @tool
 def get_subway_arrivals(line: str, limit: int = 10) -> str:
@@ -277,3 +379,169 @@ def get_train_arrivals_at_station(line: str, station: str, limit: int = 5) -> st
 
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+@tool
+def get_nearby_subway_stations(
+    location: str,
+    num_stations: int = 5,
+    user_lat: float | None = None,
+    user_lon: float | None = None,
+) -> str:
+    """Find subway stations near a location.
+
+    Args:
+        location: Address, neighborhood, or landmark (e.g. "Williamsburg Brooklyn", "Empire State Building", "14th and 6th ave", or "near me")
+        num_stations: Number of nearby stations to return (default 5)
+        user_lat: User's latitude (auto-injected for "near me" queries)
+        user_lon: User's longitude (auto-injected for "near me" queries)
+    """
+    if not STATION_COORDS:
+        return "Error: Station coordinate data not available. Ensure data/stops.txt exists."
+
+    # Use injected coordinates if available (for "near me" queries)
+    if user_lat is not None and user_lon is not None:
+        lat, lon = user_lat, user_lon
+        display_name = "your location"
+    else:
+        geo = geocode_location(location)
+        if not geo:
+            return f"Could not find location: {location}"
+        lat, lon, display_name = geo
+
+    nearby = find_nearest_stations(lat, lon, num_stations)
+
+    output = [f"📍 Subway stations near {display_name}:\n"]
+
+    for station in nearby:
+        output.append(f"  • {station['name']} — {station['distance_mi']} mi ({station['distance_km']} km)")
+
+    output.append("\n💡 Use get_train_arrivals_at_station(line, station) for arrival times")
+
+    return "\n".join(output)
+
+
+@tool
+def get_nearby_subway_arrivals(
+    location: str,
+    line: str = "",
+    limit: int = 8,
+    user_lat: float | None = None,
+    user_lon: float | None = None,
+) -> str:
+    """Get subway arrivals at stations near a location.
+
+    Args:
+        location: Address, neighborhood, or landmark (e.g. "Williamsburg", "Times Square", "14th and 8th", or "near me")
+        line: Optional - filter to specific line (e.g. "G", "L", "A"). Leave empty for all nearby lines.
+        limit: Maximum arrivals to show (default 8)
+        user_lat: User's latitude (auto-injected for "near me" queries)
+        user_lon: User's longitude (auto-injected for "near me" queries)
+    """
+    from nyct_gtfs import NYCTFeed
+    import datetime
+
+    if not STATION_COORDS:
+        return "Error: Station coordinate data not available."
+
+    # Use injected coordinates if available (for "near me" queries)
+    if user_lat is not None and user_lon is not None:
+        lat, lon = user_lat, user_lon
+        display_name = "your location"
+    else:
+        geo = geocode_location(location)
+        if not geo:
+            return f"Could not find location: {location}"
+        lat, lon, display_name = geo
+
+    nearby_stations = find_nearest_stations(lat, lon, n=5)  # Check 5 nearest stations
+
+    if not nearby_stations:
+        return "No nearby stations found."
+
+    nearby_station_names = [s["name"] for s in nearby_stations]
+
+    # Determine which lines to check
+    if line:
+        lines_to_check = [line.upper()]
+    else:
+        # Check common lines (skip shuttles for speed)
+        lines_to_check = ["1", "2", "3", "4", "5", "6", "7", "A", "C", "E", "B", "D", "F", "M", "G", "J", "Z", "L", "N", "Q", "R", "W"]
+
+    all_arrivals = []
+    checked_lines = set()
+
+    for check_line in lines_to_check:
+        if check_line not in VALID_LINES or check_line in checked_lines:
+            continue
+
+        try:
+            feed = NYCTFeed(check_line)
+            # Mark all lines in this feed as checked (feeds contain multiple lines)
+            for trip_line in feed.trip_replacement_periods.keys():
+                checked_lines.add(trip_line)
+
+            trains = feed.filter_trips(underway=True)
+
+            for train in trains:
+                train_line = train.route_id
+                # Skip if we're filtering by line and this isn't it
+                if line and train_line.upper() != line.upper():
+                    continue
+
+                for stop in train.stop_time_updates:
+                    # Check if this stop matches any nearby station
+                    stop_norm = normalize_station_name(stop.stop_name)
+                    for nearby_name in nearby_station_names:
+                        nearby_norm = normalize_station_name(nearby_name)
+                        if nearby_norm in stop_norm or stop_norm in nearby_norm:
+                            all_arrivals.append({
+                                "line": train_line,
+                                "train": train,
+                                "stop": stop,
+                                "arrival": stop.arrival,
+                                "station_name": stop.stop_name,
+                            })
+                            break
+        except Exception:
+            continue  # Skip lines/feeds with errors
+
+    if not all_arrivals:
+        station_list = ", ".join(nearby_station_names[:3])
+        if line:
+            return f"No upcoming {line.upper()} trains found near {display_name} ({station_list})."
+        return f"No upcoming trains found near {display_name} ({station_list})."
+
+    # Sort by arrival time
+    all_arrivals.sort(key=lambda x: x["arrival"] if x["arrival"] else float("inf"))
+
+    # Dedupe by line+direction+station (keep earliest arrival)
+    seen = set()
+    unique_arrivals = []
+    for arr in all_arrivals:
+        key = (arr["line"], arr["train"].direction, arr["station_name"])
+        if key not in seen:
+            seen.add(key)
+            unique_arrivals.append(arr)
+
+    output = [f"🚇 Subway arrivals near {display_name}:\n"]
+
+    now = datetime.datetime.now()
+
+    for arr in unique_arrivals[:limit]:
+        arrival_time = arr["arrival"]
+        if arrival_time:
+            mins = int((arrival_time - now).total_seconds() / 60)
+            if mins < 1:
+                time_str = "now"
+            elif mins == 1:
+                time_str = "1 min"
+            else:
+                time_str = f"{mins} mins"
+        else:
+            time_str = "?"
+
+        direction = "↑" if arr["train"].direction == "N" else "↓"
+        output.append(f"  • {arr['line']} {direction} at {arr['station_name']}: {time_str}")
+
+    return "\n".join(output)

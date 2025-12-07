@@ -19,6 +19,11 @@ interface TraceEvent {
   result?: string;
 }
 
+interface UserLocation {
+  lat: number;
+  lon: number;
+}
+
 // Tool icons mapping
 const TOOL_ICONS: Record<string, string> = {
   get_weather: "🌤️",
@@ -172,6 +177,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -185,6 +191,24 @@ export default function Home() {
     return () => {
       abortControllerRef.current?.abort();
     };
+  }, []);
+
+  // Request browser geolocation on mount (optional - user can deny)
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lon: position.coords.longitude,
+          });
+        },
+        () => {
+          // User denied or error - that's fine, location is optional
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+      );
+    }
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -210,7 +234,10 @@ export default function Home() {
       const response = await fetch("http://localhost:8000/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMessage }),
+        body: JSON.stringify({ 
+          message: userMessage,
+          location: userLocation,  // Optional - null if user denied permission
+        }),
         signal: abortControllerRef.current.signal,
       });
 

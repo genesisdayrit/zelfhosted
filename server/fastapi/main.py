@@ -35,7 +35,11 @@ async def health():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Chat endpoint using LangGraph (non-streaming)."""
-    result = graph.invoke({"messages": [{"role": "user", "content": request.message}]})
+    initial_state = {
+        "messages": [{"role": "user", "content": request.message}],
+        "user_location": request.location.model_dump() if request.location else None,
+    }
+    result = graph.invoke(initial_state)
     ai_message = result["messages"][-1]
     return ChatResponse(response=ai_message.content)
 
@@ -43,10 +47,14 @@ async def chat(request: ChatRequest):
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint - streams tokens and graph updates."""
+    initial_state = {
+        "messages": [{"role": "user", "content": request.message}],
+        "user_location": request.location.model_dump() if request.location else None,
+    }
 
     async def event_generator():
         async for mode, chunk in graph.astream(
-            {"messages": [{"role": "user", "content": request.message}]},
+            initial_state,
             stream_mode=["messages", "updates", "custom"],
         ):
             if mode == "custom":

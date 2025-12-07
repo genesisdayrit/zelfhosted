@@ -16,6 +16,7 @@ load_dotenv()
 class State(TypedDict):
     """State schema for the chatbot graph."""
     messages: Annotated[list, add_messages]
+    user_location: dict | None  # Optional {lat, lon} from browser geolocation
 
 
 # Initialize the LLM with tools bound
@@ -30,14 +31,26 @@ def chatbot(state: State):
     return {"messages": [llm_with_tools.invoke(state["messages"])]}
 
 
+NEAR_ME_KEYWORDS = {"me", "near me", "nearby", "my location", "current location", "here"}
+
+
 def tool_node(state: State):
     """Execute the tool calls made by the LLM."""
     writer = get_stream_writer()
     results = []
+    user_location = state.get("user_location")
     
     for tool_call in state["messages"][-1].tool_calls:
         tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
+        tool_args = tool_call["args"].copy()  # Copy to avoid mutating original
+        
+        # Inject user coordinates for subway tools when "near me" is requested
+        if tool_name in ("get_nearby_subway_arrivals", "get_nearby_subway_stations"):
+            location_arg = tool_args.get("location", "").lower().strip()
+            if location_arg in NEAR_ME_KEYWORDS and user_location:
+                # Replace "near me" with actual coordinates
+                tool_args["user_lat"] = user_location["lat"]
+                tool_args["user_lon"] = user_location["lon"]
         
         writer({
             "type": "tool_call",
