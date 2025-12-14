@@ -5,6 +5,43 @@ from langchain_core.tools import tool
 http_client = httpx.Client(timeout=10.0)
 
 
+def reverse_geocode(lat: float, lon: float) -> str:
+    """Convert coordinates to a location name using Open-Meteo Geocoding API.
+    
+    Returns a display name like "Brooklyn, New York, United States" or falls back to coordinates.
+    """
+    # Use a nearby city search with the coordinates
+    response = http_client.get(
+        "https://nominatim.openstreetmap.org/reverse",
+        params={
+            "lat": lat,
+            "lon": lon,
+            "format": "json",
+            "zoom": 10,  # City-level detail
+        },
+        headers={"User-Agent": "Zelfhosted/1.0"},
+    )
+    
+    if response.status_code != 200:
+        return f"Location ({lat:.2f}, {lon:.2f})"
+    
+    data = response.json()
+    address = data.get("address", {})
+    
+    # Build display name from address components
+    parts = []
+    for key in ["city", "town", "village", "municipality", "county"]:
+        if address.get(key):
+            parts.append(address[key])
+            break
+    if address.get("state"):
+        parts.append(address["state"])
+    if address.get("country"):
+        parts.append(address["country"])
+    
+    return ", ".join(parts) if parts else f"Location ({lat:.2f}, {lon:.2f})"
+
+
 def geocode_location(location: str) -> tuple[float, float, str] | None:
     """Convert a location name to coordinates using Open-Meteo Geocoding API.
     
@@ -82,17 +119,27 @@ def get_weather_code_description(code: int) -> str:
 
 
 @tool
-def get_weather(location: str) -> str:
+def get_weather(
+    location: str,
+    user_lat: float | None = None,
+    user_lon: float | None = None,
+) -> str:
     """Get the current weather for a location.
 
     Args:
-        location: The city and state, e.g. "San Francisco, CA"
+        location: The city and state, e.g. "San Francisco, CA". Use "my location" or "near me" for user's current location.
+        user_lat: Optional latitude from browser geolocation (injected automatically).
+        user_lon: Optional longitude from browser geolocation (injected automatically).
     """
-    geo_result = geocode_location(location)
-    if not geo_result:
-        return f"Could not find location: {location}"
-    
-    lat, lon, display_name = geo_result
+    # If coordinates are provided directly (user's current location), use them
+    if user_lat is not None and user_lon is not None:
+        display_name = reverse_geocode(user_lat, user_lon)
+        lat, lon = user_lat, user_lon
+    else:
+        geo_result = geocode_location(location)
+        if not geo_result:
+            return f"Could not find location: {location}"
+        lat, lon, display_name = geo_result
     
     response = http_client.get(
         "https://api.open-meteo.com/v1/forecast",
@@ -119,4 +166,8 @@ def get_weather(location: str) -> str:
     condition = get_weather_code_description(weather_code)
     
     return f"{display_name}: {condition}, {temp}°F, Humidity: {humidity}%, Wind: {wind_speed} mph"
+
+
+
+
 

@@ -44,11 +44,18 @@ def tool_node(state: State):
         tool_name = tool_call["name"]
         tool_args = tool_call["args"].copy()  # Copy to avoid mutating original
         
-        # Inject user coordinates for subway tools when "near me" is requested
+        # Inject user coordinates for location-aware tools when "near me" is requested
         if tool_name in ("get_nearby_subway_arrivals", "get_nearby_subway_stations"):
             location_arg = tool_args.get("location", "").lower().strip()
             if location_arg in NEAR_ME_KEYWORDS and user_location:
                 # Replace "near me" with actual coordinates
+                tool_args["user_lat"] = user_location["lat"]
+                tool_args["user_lon"] = user_location["lon"]
+        
+        # Inject user coordinates for weather tool when "near me" is requested
+        if tool_name == "get_weather":
+            location_arg = tool_args.get("location", "").lower().strip()
+            if location_arg in NEAR_ME_KEYWORDS and user_location:
                 tool_args["user_lat"] = user_location["lat"]
                 tool_args["user_lon"] = user_location["lon"]
         
