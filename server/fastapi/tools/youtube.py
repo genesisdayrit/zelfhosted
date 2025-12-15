@@ -1,10 +1,11 @@
 """
 YouTube Song Search Tool
 
-Searches YouTube for songs and returns video links.
+Searches YouTube for songs and returns video links with structured data for embedding.
 """
 
 import os
+import json
 import httpx
 from langchain_core.tools import tool
 
@@ -16,9 +17,11 @@ def search_youtube_song(
     query: str,
     max_results: int = 3,
 ) -> str:
-    """Search for a song on YouTube and return video links.
+    """Search for a song on YouTube and return video results.
     
     Use this tool when a user wants to find music, songs, or music videos on YouTube.
+    Returns structured JSON with video details. The videos will be embedded automatically
+    in the UI - just summarize what was found for the user.
     
     Args:
         query: The song name and/or artist to search for, e.g. "Bohemian Rhapsody Queen"
@@ -27,7 +30,7 @@ def search_youtube_song(
     try:
         api_key = os.getenv("YOUTUBE_API_KEY")
         if not api_key:
-            return "Error: YouTube API key not configured"
+            return json.dumps({"error": "YouTube API key not configured", "videos": []})
         
         max_results = min(max_results, 5)  # Cap at 5
         
@@ -45,27 +48,30 @@ def search_youtube_song(
         
         if response.status_code != 200:
             error_detail = response.json().get("error", {}).get("message", "Unknown error")
-            return f"Error searching YouTube: {error_detail}"
+            return json.dumps({"error": f"YouTube API error: {error_detail}", "videos": []})
         
         data = response.json()
         items = data.get("items", [])
         
         if not items:
-            return f"No songs found for: {query}"
+            return json.dumps({"error": f"No songs found for: {query}", "videos": []})
         
-        lines = [f"🎵 YouTube results for \"{query}\":\n"]
+        videos = []
+        for item in items:
+            videos.append({
+                "id": item["id"]["videoId"],
+                "title": item["snippet"]["title"],
+                "channel": item["snippet"]["channelTitle"],
+            })
         
-        for i, item in enumerate(items, 1):
-            video_id = item["id"]["videoId"]
-            title = item["snippet"]["title"]
-            channel = item["snippet"]["channelTitle"]
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            
-            lines.append(f"{i}. **[{title}]({url})**")
-            lines.append(f"   Channel: {channel}\n")
+        # Return structured JSON
+        result = {
+            "query": query,
+            "videos": videos,
+            "text": f"Found {len(videos)} result(s) for '{query}': " + ", ".join(v["title"] for v in videos),
+        }
         
-        return "\n".join(lines)
+        return json.dumps(result)
         
     except Exception as e:
-        return f"Error searching YouTube: {str(e)}"
-
+        return json.dumps({"error": str(e), "videos": []})

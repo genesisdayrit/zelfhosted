@@ -24,12 +24,19 @@ interface UserLocation {
   lon: number;
 }
 
+interface YouTubeEmbed {
+  videoId: string;
+  title: string;
+  channel: string;
+}
+
 // Tool icons mapping
 const TOOL_ICONS: Record<string, string> = {
   get_weather: "🌤️",
   get_polymarket_opportunities: "📈",
   get_arxiv_articles: "📚",
   get_latest_photos: "📷",
+  search_youtube_song: "🎵",
   default: "⚡",
 };
 
@@ -53,6 +60,28 @@ function TerminalMarkdown({ content }: { content: string }) {
       const lineElements: React.ReactNode[] = [];
 
       while (remaining.length > 0) {
+        // Check for YouTube embed: {{youtube:VIDEO_ID}}
+        const youtubeMatch = remaining.match(/^\{\{youtube:([a-zA-Z0-9_-]+)\}\}/);
+        if (youtubeMatch) {
+          const videoId = youtubeMatch[1];
+          lineElements.push(
+            <div key={key++} className="my-3">
+              <iframe
+                width="100%"
+                height="315"
+                src={`https://www.youtube.com/embed/${videoId}`}
+                title="YouTube video"
+                frameBorder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+                className="rounded-lg border border-[#8b5cf6]/30 shadow-lg max-w-md"
+              />
+            </div>
+          );
+          remaining = remaining.slice(youtubeMatch[0].length);
+          continue;
+        }
+
         // Check for image: ![alt](url)
         const imageMatch = remaining.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
         if (imageMatch) {
@@ -174,6 +203,7 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const [youtubeEmbeds, setYoutubeEmbeds] = useState<YouTubeEmbed[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
@@ -223,6 +253,7 @@ export default function Home() {
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     setIsStreaming(true);
     setTraceEvents([]);
+    setYoutubeEmbeds([]);
 
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
@@ -313,6 +344,15 @@ export default function Home() {
                       : event
                   )
                 );
+              } else if (data.type === "youtube_embed") {
+                setYoutubeEmbeds((prev) => [
+                  ...prev,
+                  {
+                    videoId: data.video_id,
+                    title: data.title,
+                    channel: data.channel || "",
+                  },
+                ]);
               } else if (data.type === "done") {
                 setIsStreaming(false);
               }
@@ -369,6 +409,7 @@ export default function Home() {
                 }
                 setMessages([]);
                 setTraceEvents([]);
+                setYoutubeEmbeds([]);
                 setInput("");
                 setIsStreaming(false);
                 streamingRef.current = false;
@@ -539,6 +580,34 @@ export default function Home() {
                           </span>
                         )}
                     </div>
+
+                    {/* YouTube embeds - render below assistant message */}
+                    {message.role === "assistant" &&
+                      index === messages.length - 1 &&
+                      youtubeEmbeds.length > 0 && (
+                        <div className="mt-4 space-y-4">
+                          {youtubeEmbeds.map((embed, embedIndex) => (
+                            <div key={embedIndex} className="space-y-1">
+                              <div className="text-xs text-[#8b7355]">
+                                🎵 {embed.title}
+                                {embed.channel && (
+                                  <span className="text-[#6b5545]"> • {embed.channel}</span>
+                                )}
+                              </div>
+                              <iframe
+                                width="100%"
+                                height="315"
+                                src={`https://www.youtube.com/embed/${embed.videoId}`}
+                                title={embed.title}
+                                frameBorder="0"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowFullScreen
+                                className="rounded-lg border border-[#8b5cf6]/30 shadow-lg max-w-md"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                   </div>
                 </div>
               ))}

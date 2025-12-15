@@ -1,3 +1,4 @@
+import json
 from typing import Annotated, Literal
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
@@ -68,14 +69,34 @@ def tool_node(state: State):
         tool_fn = tools_by_name[tool_name]
         result = tool_fn.invoke(tool_args)
         
+        # Handle YouTube tool specially - stream embed events for each video
+        result_for_llm = str(result)
+        if tool_name == "search_youtube_song":
+            try:
+                result_data = json.loads(result)
+                # Stream embed events for each video
+                for video in result_data.get("videos", []):
+                    writer({
+                        "type": "youtube_embed",
+                        "video_id": video["id"],
+                        "title": video["title"],
+                        "channel": video.get("channel", ""),
+                    })
+                # Give LLM just the text summary
+                result_for_llm = result_data.get("text", str(result))
+                if result_data.get("error"):
+                    result_for_llm = result_data["error"]
+            except json.JSONDecodeError:
+                pass  # Fall back to raw result
+        
         writer({
             "type": "tool_result",
             "tool": tool_name,
-            "result": str(result),
+            "result": result_for_llm,
         })
         
         results.append(
-            ToolMessage(content=str(result), tool_call_id=tool_call["id"])
+            ToolMessage(content=result_for_llm, tool_call_id=tool_call["id"])
         )
     
     return {"messages": results}
