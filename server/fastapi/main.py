@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -13,9 +14,20 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Default CORS origins (localhost for dev)
+cors_origins = [
+    "http://localhost:3000",  # Next.js dev
+    "http://localhost:8081",  # Expo web dev
+]
+
+# Add additional origins from environment variable (comma-separated)
+extra_origins = os.getenv("CORS_ORIGINS", "")
+if extra_origins:
+    cors_origins.extend([origin.strip() for origin in extra_origins.split(",")])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
