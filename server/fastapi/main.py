@@ -48,7 +48,7 @@ async def health():
 async def chat(request: ChatRequest):
     """Chat endpoint using LangGraph (non-streaming)."""
     initial_state = {
-        "messages": [{"role": "user", "content": request.message}],
+        "messages": [{"role": m.role, "content": m.content} for m in request.messages],
         "user_location": request.location.model_dump() if request.location else None,
     }
     result = graph.invoke(initial_state)
@@ -60,7 +60,7 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint - streams tokens and graph updates."""
     initial_state = {
-        "messages": [{"role": "user", "content": request.message}],
+        "messages": [{"role": m.role, "content": m.content} for m in request.messages],
         "user_location": request.location.model_dump() if request.location else None,
     }
 

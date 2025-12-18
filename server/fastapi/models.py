@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import Literal
 
 
 class Location(BaseModel):
@@ -6,8 +7,13 @@ class Location(BaseModel):
     lon: float
 
 
+class MessageItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class ChatRequest(BaseModel):
-    message: str
+    messages: list[MessageItem]  # Full conversation history
     location: Location | None = None  # Optional browser geolocation
 
 

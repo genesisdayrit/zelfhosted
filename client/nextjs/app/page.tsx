@@ -261,12 +261,15 @@ export default function Home() {
 
     let accumulatedContent = "";
 
+    // Build messages array including all previous messages plus the new user message
+    const allMessages = [...messages, { role: "user" as const, content: userMessage }];
+
     try {
       const response = await fetch("http://localhost:8000/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
-          message: userMessage,
+          messages: allMessages,  // Send full conversation history
           location: userLocation,  // Optional - null if user denied permission
         }),
         signal: abortControllerRef.current.signal,
