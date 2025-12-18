@@ -11,7 +11,10 @@ import {
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
+  Linking,
+  Image,
 } from 'react-native';
+import YoutubePlayer from 'react-native-youtube-iframe';
 
 // API URL from environment variable, fallback to localhost for web dev
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
@@ -20,6 +23,7 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
 const COLORS = {
   bg: '#1a1612',
   bgDark: '#0f0d0a',
+  bgCode: '#2a2520',
   sand200: '#e8dcc4',
   sand300: '#d4a574',
   sand400: '#8b7355',
@@ -69,12 +73,153 @@ interface UserLocation {
   lon: number;
 }
 
+interface YouTubeEmbed {
+  videoId: string;
+  title: string;
+  channel: string;
+}
+
+// Terminal-styled markdown renderer
+function TerminalMarkdown({ content, showCursor }: { content: string; showCursor?: boolean }) {
+  const elements: React.ReactNode[] = [];
+  let key = 0;
+
+  const lines = content.split('\n');
+
+  lines.forEach((line, lineIndex) => {
+    const lineElements: React.ReactNode[] = [];
+    let remaining = line;
+
+    while (remaining.length > 0) {
+      // Image: ![alt](url)
+      const imageMatch = remaining.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
+      if (imageMatch) {
+        // Push any accumulated text first
+        if (lineElements.length > 0) {
+          elements.push(
+            <Text key={key++} style={styles.mdText}>{lineElements}</Text>
+          );
+          lineElements.length = 0;
+        }
+        elements.push(
+          <Image
+            key={key++}
+            source={{ uri: imageMatch[2] }}
+            style={styles.mdImage}
+            resizeMode="contain"
+          />
+        );
+        remaining = remaining.slice(imageMatch[0].length);
+        continue;
+      }
+
+      // Bold link: **[text](url)**
+      const boldLinkMatch = remaining.match(/^\*\*\[([^\]]+)\]\(([^)]+)\)\*\*/);
+      if (boldLinkMatch) {
+        const url = boldLinkMatch[2];
+        lineElements.push(
+          <Text
+            key={key++}
+            style={styles.mdBoldLink}
+            onPress={() => Linking.openURL(url)}
+          >
+            {boldLinkMatch[1]}
+          </Text>
+        );
+        remaining = remaining.slice(boldLinkMatch[0].length);
+        continue;
+      }
+
+      // Link: [text](url)
+      const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
+      if (linkMatch) {
+        const url = linkMatch[2];
+        lineElements.push(
+          <Text
+            key={key++}
+            style={styles.mdLink}
+            onPress={() => Linking.openURL(url)}
+          >
+            {linkMatch[1]}
+          </Text>
+        );
+        remaining = remaining.slice(linkMatch[0].length);
+        continue;
+      }
+
+      // Bold: **text**
+      const boldMatch = remaining.match(/^\*\*([^*]+)\*\*/);
+      if (boldMatch) {
+        lineElements.push(
+          <Text key={key++} style={styles.mdBold}>{boldMatch[1]}</Text>
+        );
+        remaining = remaining.slice(boldMatch[0].length);
+        continue;
+      }
+
+      // Italic: _text_ or *text*
+      const italicMatch = remaining.match(/^[_*]([^_*]+)[_*]/);
+      if (italicMatch) {
+        lineElements.push(
+          <Text key={key++} style={styles.mdItalic}>{italicMatch[1]}</Text>
+        );
+        remaining = remaining.slice(italicMatch[0].length);
+        continue;
+      }
+
+      // Inline code: `code`
+      const codeMatch = remaining.match(/^`([^`]+)`/);
+      if (codeMatch) {
+        lineElements.push(
+          <Text key={key++} style={styles.mdCode}>{codeMatch[1]}</Text>
+        );
+        remaining = remaining.slice(codeMatch[0].length);
+        continue;
+      }
+
+      // Plain text - find next special character
+      const nextSpecial = remaining.search(/[!\[*_`]/);
+      if (nextSpecial === -1) {
+        lineElements.push(remaining);
+        remaining = '';
+      } else if (nextSpecial === 0) {
+        // Special char that didn't match a pattern - treat as text
+        lineElements.push(remaining[0]);
+        remaining = remaining.slice(1);
+      } else {
+        lineElements.push(remaining.slice(0, nextSpecial));
+        remaining = remaining.slice(nextSpecial);
+      }
+    }
+
+    // Add line content
+    if (lineElements.length > 0 || lineIndex < lines.length - 1) {
+      elements.push(
+        <Text key={key++} style={styles.mdText}>
+          {lineElements}
+          {lineIndex < lines.length - 1 ? '\n' : ''}
+        </Text>
+      );
+    }
+  });
+
+  // Add cursor if streaming
+  if (showCursor) {
+    elements.push(
+      <Text key={key++} style={styles.cursor}>▋</Text>
+    );
+  }
+
+  return <View style={styles.mdContainer}>{elements}</View>;
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  const [youtubeEmbeds, setYoutubeEmbeds] = useState<YouTubeEmbed[]>([]);
   const listRef = useRef<FlatList>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -83,7 +228,6 @@ export default function App() {
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        // User denied permission - that's fine, location is optional
         console.log('Location permission denied');
         return;
       }
@@ -111,6 +255,7 @@ export default function App() {
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsStreaming(true);
     setTraceEvents([]);
+    setYoutubeEmbeds([]);
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
     abortControllerRef.current = new AbortController();
@@ -197,6 +342,15 @@ export default function App() {
                       : event
                   )
                 );
+              } else if (data.type === 'youtube_embed') {
+                setYoutubeEmbeds(prev => [
+                  ...prev,
+                  {
+                    videoId: data.video_id,
+                    title: data.title,
+                    channel: data.channel || '',
+                  },
+                ]);
               } else if (data.type === 'done') {
                 setIsStreaming(false);
               }
@@ -232,6 +386,7 @@ export default function App() {
     setInput('');
     setIsStreaming(false);
     setTraceEvents([]);
+    setYoutubeEmbeds([]);
   };
 
   const renderTraceEvents = () => {
@@ -286,6 +441,32 @@ export default function App() {
     );
   };
 
+  const renderYoutubeEmbeds = () => {
+    if (youtubeEmbeds.length === 0) return null;
+
+    return (
+      <View style={styles.youtubeContainer}>
+        {youtubeEmbeds.map((embed, i) => (
+          <View key={i} style={styles.youtubeEmbed}>
+            <Text style={styles.youtubeTitle}>
+              🎵 {embed.title}
+              {embed.channel && (
+                <Text style={styles.youtubeChannel}> • {embed.channel}</Text>
+              )}
+            </Text>
+            <View style={styles.youtubePlayer}>
+              <YoutubePlayer
+                height={200}
+                videoId={embed.videoId}
+                webViewStyle={{ borderRadius: 8 }}
+              />
+            </View>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
   const renderMessage = ({ item, index }: { item: Message; index: number }) => {
     const isUser = item.role === 'user';
     const isLastMessage = index === messages.length - 1;
@@ -309,12 +490,13 @@ export default function App() {
               {new Date().toLocaleTimeString()}
             </Text>
           </View>
-          <Text style={styles.messageContent}>
-            {item.content}
-            {!isUser && isStreaming && isLastMessage && (
-              <Text style={styles.cursor}>▋</Text>
-            )}
-          </Text>
+          <TerminalMarkdown 
+            content={item.content} 
+            showCursor={!isUser && isStreaming && isLastMessage}
+          />
+
+          {/* YouTube embeds below assistant message */}
+          {!isUser && isLastMessage && renderYoutubeEmbeds()}
         </View>
       </View>
     );
@@ -591,14 +773,77 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
-  messageContent: {
+  cursor: {
+    color: COLORS.green500,
+  },
+
+  // Markdown styles
+  mdContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  mdText: {
     color: COLORS.sand200,
     fontSize: 14,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     lineHeight: 22,
   },
-  cursor: {
+  mdBold: {
+    color: COLORS.sand300,
+    fontWeight: '600',
+  },
+  mdItalic: {
+    color: COLORS.sand400,
+    fontStyle: 'italic',
+  },
+  mdLink: {
+    color: COLORS.cyan500,
+    textDecorationLine: 'underline',
+  },
+  mdBoldLink: {
+    color: COLORS.purple500,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  mdCode: {
+    backgroundColor: COLORS.bgCode,
     color: COLORS.green500,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  mdImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginVertical: 8,
+    borderWidth: 1,
+    borderColor: `${COLORS.purple500}4D`,
+  },
+
+  // YouTube embeds
+  youtubeContainer: {
+    marginTop: 16,
+  },
+  youtubeEmbed: {
+    marginBottom: 12,
+  },
+  youtubeTitle: {
+    color: COLORS.sand400,
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginBottom: 8,
+  },
+  youtubeChannel: {
+    color: COLORS.sand400,
+  },
+  youtubePlayer: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: `${COLORS.purple500}4D`,
   },
 
   // Input
