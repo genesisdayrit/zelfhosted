@@ -37,6 +37,9 @@ const TOOL_ICONS: Record<string, string> = {
   get_arxiv_articles: "📚",
   get_latest_photos: "📷",
   search_youtube_song: "🎵",
+  exa_search: "🔍",
+  exa_find_similar: "🔗",
+  exa_answer: "💡",
   default: "⚡",
 };
 
