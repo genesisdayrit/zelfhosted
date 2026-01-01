@@ -59,25 +59,6 @@ const TOOL_ICONS: Record<string, string> = {
   default: '⚡',
 };
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface TraceEvent {
-  id: string;
-  type: 'node' | 'tool';
-  name: string;
-  status: 'running' | 'complete';
-  args?: Record<string, unknown>;
-  result?: string;
-}
-
-interface UserLocation {
-  lat: number;
-  lon: number;
-}
-
 interface YouTubeEmbed {
   videoId: string;
   title: string;
@@ -89,6 +70,28 @@ interface SpotifyEmbed {
   id: string;
   name: string;
   artist: string;
+}
+
+interface TraceEvent {
+  id: string;
+  type: 'node' | 'tool';
+  name: string;
+  status: 'running' | 'complete';
+  args?: Record<string, unknown>;
+  result?: string;
+}
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  youtubeEmbeds?: YouTubeEmbed[];
+  spotifyEmbeds?: SpotifyEmbed[];
+  traceEvents?: TraceEvent[];
+}
+
+interface UserLocation {
+  lat: number;
+  lon: number;
 }
 
 // Terminal-styled markdown renderer
@@ -233,8 +236,34 @@ export default function App() {
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [youtubeEmbeds, setYoutubeEmbeds] = useState<YouTubeEmbed[]>([]);
   const [spotifyEmbeds, setSpotifyEmbeds] = useState<SpotifyEmbed[]>([]);
+  const [expandedTraces, setExpandedTraces] = useState<Set<number>>(new Set());
   const listRef = useRef<FlatList>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const traceEventsRef = useRef<TraceEvent[]>([]);
+  const youtubeEmbedsRef = useRef<YouTubeEmbed[]>([]);
+  const spotifyEmbedsRef = useRef<SpotifyEmbed[]>([]);
+
+  // Keep refs in sync with state for closure access
+  useEffect(() => {
+    traceEventsRef.current = traceEvents;
+  }, [traceEvents]);
+
+  useEffect(() => {
+    youtubeEmbedsRef.current = youtubeEmbeds;
+  }, [youtubeEmbeds]);
+
+  useEffect(() => {
+    spotifyEmbedsRef.current = spotifyEmbeds;
+  }, [spotifyEmbeds]);
+
+  const toggleTraceExpansion = (index: number) => {
+    setExpandedTraces((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
 
   // Request location permission and get location on mount
   useEffect(() => {
@@ -265,12 +294,27 @@ export default function App() {
 
     const userMessage = input.trim();
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+
+    // Finalize embeds and trace events on the last assistant message before adding new messages
+    setMessages((prev) => {
+      const updated = [...prev];
+      const lastAssistantIdx = updated.map(m => m.role).lastIndexOf('assistant');
+      if (lastAssistantIdx >= 0) {
+        updated[lastAssistantIdx] = {
+          ...updated[lastAssistantIdx],
+          youtubeEmbeds: youtubeEmbeds.length > 0 ? youtubeEmbeds : updated[lastAssistantIdx].youtubeEmbeds,
+          spotifyEmbeds: spotifyEmbeds.length > 0 ? spotifyEmbeds : updated[lastAssistantIdx].spotifyEmbeds,
+          traceEvents: traceEvents.length > 0 ? traceEvents : updated[lastAssistantIdx].traceEvents,
+        };
+      }
+      return [...updated, { role: 'user', content: userMessage }];
+    });
+
     setIsStreaming(true);
     setTraceEvents([]);
     setYoutubeEmbeds([]);
     setSpotifyEmbeds([]);
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+    setMessages(prev => [...prev, { role: 'assistant', content: '', youtubeEmbeds: [], spotifyEmbeds: [], traceEvents: [] }]);
 
     abortControllerRef.current = new AbortController();
     let accumulatedContent = '';
@@ -309,33 +353,29 @@ export default function App() {
               const data = JSON.parse(line.slice(6));
 
               if (data.type === 'node_start') {
-                setTraceEvents(prev => [
-                  ...prev,
-                  {
-                    id: `node-${data.node}-${Date.now()}`,
-                    type: 'node',
-                    name: data.node,
-                    status: 'running',
-                  },
-                ]);
+                const newEvent: TraceEvent = {
+                  id: `node-${data.node}-${Date.now()}`,
+                  type: 'node',
+                  name: data.node,
+                  status: 'running',
+                };
+                setTraceEvents(prev => [...prev, newEvent]);
               } else if (data.type === 'tool_call') {
-                setTraceEvents(prev => [
-                  ...prev,
-                  {
-                    id: `tool-${data.tool}-${Date.now()}`,
-                    type: 'tool',
-                    name: data.tool,
-                    status: 'running',
-                    args: data.args,
-                  },
-                ]);
+                const newEvent: TraceEvent = {
+                  id: `tool-${data.tool}-${Date.now()}`,
+                  type: 'tool',
+                  name: data.tool,
+                  status: 'running',
+                  args: data.args,
+                };
+                setTraceEvents(prev => [...prev, newEvent]);
               } else if (data.type === 'tool_result') {
                 setTraceEvents(prev =>
                   prev.map(event =>
                     event.type === 'tool' &&
                     event.name === data.tool &&
                     event.status === 'running'
-                      ? { ...event, status: 'complete', result: data.result }
+                      ? { ...event, status: 'complete' as const, result: data.result }
                       : event
                   )
                 );
@@ -355,30 +395,37 @@ export default function App() {
                     event.type === 'node' &&
                     event.name === data.node &&
                     event.status === 'running'
-                      ? { ...event, status: 'complete' }
+                      ? { ...event, status: 'complete' as const }
                       : event
                   )
                 );
               } else if (data.type === 'youtube_embed') {
-                setYoutubeEmbeds(prev => [
-                  ...prev,
-                  {
-                    videoId: data.video_id,
-                    title: data.title,
-                    channel: data.channel || '',
-                  },
-                ]);
+                const newEmbed = {
+                  videoId: data.video_id,
+                  title: data.title,
+                  channel: data.channel || '',
+                };
+                setYoutubeEmbeds(prev => [...prev, newEmbed]);
               } else if (data.type === 'spotify_embed') {
-                setSpotifyEmbeds(prev => [
-                  ...prev,
-                  {
-                    contentType: data.content_type,
-                    id: data.id,
-                    name: data.name,
-                    artist: data.artist || '',
-                  },
-                ]);
+                const newEmbed = {
+                  contentType: data.content_type as SpotifyEmbed['contentType'],
+                  id: data.id,
+                  name: data.name,
+                  artist: data.artist || '',
+                };
+                setSpotifyEmbeds(prev => [...prev, newEmbed]);
               } else if (data.type === 'done') {
+                // Finalize trace events and embeds on the message
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const lastMessage = updated[updated.length - 1];
+                  if (lastMessage?.role === 'assistant') {
+                    lastMessage.traceEvents = [...traceEventsRef.current];
+                    lastMessage.youtubeEmbeds = [...youtubeEmbedsRef.current];
+                    lastMessage.spotifyEmbeds = [...spotifyEmbedsRef.current];
+                  }
+                  return updated;
+                });
                 setIsStreaming(false);
               }
             } catch {
@@ -417,14 +464,24 @@ export default function App() {
     setSpotifyEmbeds([]);
   };
 
-  const renderTraceEvents = () => {
-    if (traceEvents.length === 0) return null;
+  const renderTraceEvents = (index: number, messageTraces?: TraceEvent[]) => {
+    const isCurrentlyStreaming = isStreaming && index === messages.length - 1;
+    // During streaming: use global traceEvents; after: use message.traceEvents
+    const events = isCurrentlyStreaming ? traceEvents : messageTraces;
+    const toolCount = events?.filter((e) => e.type === 'tool').length || 0;
+    const isExpanded = expandedTraces.has(index) || isCurrentlyStreaming;
+
+    if (!events || events.length === 0) return null;
 
     return (
       <View style={styles.traceContainer}>
-        <Text style={styles.traceLabel}>[TRACE]</Text>
+        <Text style={styles.traceLabel}>
+          [TRACE] {isExpanded ? '▼' : '▶'} {toolCount} tool{toolCount !== 1 ? 's' : ''}
+        </Text>
+
+        {/* Compact trace flow - always visible */}
         <View style={styles.traceFlow}>
-          {traceEvents.map((event, i) => (
+          {events.map((event, i) => (
             <View key={event.id} style={styles.traceItem}>
               {i > 0 && <Text style={styles.traceArrow}>→</Text>}
               <View
@@ -465,16 +522,58 @@ export default function App() {
             </View>
           ))}
         </View>
+
+        {/* Tool details toggle - collapsible */}
+        {events.some((e) => e.type === 'tool') && (
+          <TouchableOpacity onPress={() => toggleTraceExpansion(index)}>
+            <Text style={styles.traceDetailsToggle}>
+              {isExpanded ? 'Hide' : 'Show'} details
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Tool details - only shown when expanded */}
+        {isExpanded && events.some((e) => e.type === 'tool') && (
+          <View style={styles.toolDetailsContainer}>
+            {events
+              .filter((e) => e.type === 'tool')
+              .map((tool) => (
+                <View key={tool.id} style={styles.toolDetailBox}>
+                  <View style={styles.toolDetailHeader}>
+                    <Text style={styles.toolDetailIcon}>
+                      {TOOL_ICONS[tool.name] || TOOL_ICONS.default}
+                    </Text>
+                    <Text style={styles.toolDetailName}>{tool.name}</Text>
+                    <Text style={tool.status === 'running' ? styles.toolRunningText : styles.toolCompleteText}>
+                      {tool.status === 'running' ? '● executing...' : '✓ complete'}
+                    </Text>
+                  </View>
+                  {tool.args && (
+                    <Text style={styles.toolDetailArgs}>
+                      args: {JSON.stringify(tool.args)}
+                    </Text>
+                  )}
+                  {tool.result && (
+                    <Text style={styles.toolDetailResult}>
+                      result: "{tool.result}"
+                    </Text>
+                  )}
+                </View>
+              ))}
+          </View>
+        )}
       </View>
     );
   };
 
-  const renderYoutubeEmbeds = () => {
-    if (youtubeEmbeds.length === 0) return null;
+  const renderYoutubeEmbeds = (index: number, messageEmbeds?: YouTubeEmbed[]) => {
+    const isCurrentlyStreaming = isStreaming && index === messages.length - 1;
+    const embeds = isCurrentlyStreaming ? youtubeEmbeds : messageEmbeds;
+    if (!embeds || embeds.length === 0) return null;
 
     return (
       <View style={styles.youtubeContainer}>
-        {youtubeEmbeds.map((embed, i) => (
+        {embeds.map((embed, i) => (
           <View key={i} style={styles.youtubeEmbed}>
             <Text style={styles.youtubeTitle}>
               🎵 {embed.title}
@@ -495,12 +594,14 @@ export default function App() {
     );
   };
 
-  const renderSpotifyEmbeds = () => {
-    if (spotifyEmbeds.length === 0) return null;
+  const renderSpotifyEmbeds = (index: number, messageEmbeds?: SpotifyEmbed[]) => {
+    const isCurrentlyStreaming = isStreaming && index === messages.length - 1;
+    const embeds = isCurrentlyStreaming ? spotifyEmbeds : messageEmbeds;
+    if (!embeds || embeds.length === 0) return null;
 
     return (
       <View style={styles.spotifyContainer}>
-        {spotifyEmbeds.map((embed, i) => (
+        {embeds.map((embed, i) => (
           <View key={i} style={styles.spotifyEmbed}>
             <Text style={styles.spotifyTitle}>
               🎧 {embed.name}
@@ -529,8 +630,8 @@ export default function App() {
 
     return (
       <View style={styles.messageWrapper}>
-        {/* Show trace events above the last assistant message */}
-        {!isUser && isLastMessage && renderTraceEvents()}
+        {/* Show trace events above assistant message - collapsible after completion */}
+        {!isUser && renderTraceEvents(index, item.traceEvents)}
 
         <View
           style={[
@@ -546,16 +647,16 @@ export default function App() {
               {new Date().toLocaleTimeString()}
             </Text>
           </View>
-          <TerminalMarkdown 
-            content={item.content} 
+          <TerminalMarkdown
+            content={item.content}
             showCursor={!isUser && isStreaming && isLastMessage}
           />
 
-          {/* YouTube embeds below assistant message */}
-          {!isUser && isLastMessage && renderYoutubeEmbeds()}
+          {/* YouTube embeds below assistant message - now persists for all messages */}
+          {!isUser && renderYoutubeEmbeds(index, item.youtubeEmbeds)}
 
-          {/* Spotify embeds below assistant message */}
-          {!isUser && isLastMessage && renderSpotifyEmbeds()}
+          {/* Spotify embeds below assistant message - now persists for all messages */}
+          {!isUser && renderSpotifyEmbeds(index, item.spotifyEmbeds)}
         </View>
       </View>
     );
@@ -793,6 +894,49 @@ const styles = StyleSheet.create({
   },
   traceStatus: {
     fontSize: 10,
+  },
+  traceDetailsToggle: {
+    color: COLORS.sand400,
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginTop: 8,
+  },
+  toolDetailsContainer: {
+    marginTop: 8,
+    gap: 8,
+  },
+  toolDetailBox: {
+    borderWidth: 1,
+    borderColor: `${COLORS.cyan500}4D`,
+    backgroundColor: `${COLORS.cyan500}0D`,
+    borderRadius: 8,
+    padding: 8,
+  },
+  toolDetailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  toolDetailIcon: {
+    fontSize: 16,
+  },
+  toolDetailName: {
+    color: COLORS.cyan500,
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontWeight: '600',
+  },
+  toolDetailArgs: {
+    color: COLORS.sand400,
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginTop: 4,
+  },
+  toolDetailResult: {
+    color: COLORS.green500,
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginTop: 4,
   },
 
   // Messages
