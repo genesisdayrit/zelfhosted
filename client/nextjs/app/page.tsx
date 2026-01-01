@@ -3,9 +3,17 @@
 import { useState, useRef, useEffect } from "react";
 import { ZELF_LOGO } from "./ascii-art-logo";
 
-interface Message {
-  role: "user" | "assistant";
-  content: string;
+interface YouTubeEmbed {
+  videoId: string;
+  title: string;
+  channel: string;
+}
+
+interface SpotifyEmbed {
+  contentType: "track" | "artist" | "album" | "playlist";
+  id: string;
+  name: string;
+  artist: string;
 }
 
 interface TraceEvent {
@@ -19,22 +27,17 @@ interface TraceEvent {
   result?: string;
 }
 
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  youtubeEmbeds?: YouTubeEmbed[];
+  spotifyEmbeds?: SpotifyEmbed[];
+  traceEvents?: TraceEvent[];
+}
+
 interface UserLocation {
   lat: number;
   lon: number;
-}
-
-interface YouTubeEmbed {
-  videoId: string;
-  title: string;
-  channel: string;
-}
-
-interface SpotifyEmbed {
-  contentType: "track" | "artist" | "album" | "playlist";
-  id: string;
-  name: string;
-  artist: string;
 }
 
 // Tool icons mapping
@@ -216,9 +219,13 @@ export default function Home() {
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [youtubeEmbeds, setYoutubeEmbeds] = useState<YouTubeEmbed[]>([]);
   const [spotifyEmbeds, setSpotifyEmbeds] = useState<SpotifyEmbed[]>([]);
+  const [expandedTraces, setExpandedTraces] = useState<Set<number>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
+  const traceEventsRef = useRef<TraceEvent[]>([]);
+  const youtubeEmbedsRef = useRef<YouTubeEmbed[]>([]);
+  const spotifyEmbedsRef = useRef<SpotifyEmbed[]>([]);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
 
   const scrollToBottom = () => {
@@ -253,6 +260,28 @@ export default function Home() {
     }
   }, []);
 
+  // Keep refs in sync with state for closure access
+  useEffect(() => {
+    traceEventsRef.current = traceEvents;
+  }, [traceEvents]);
+
+  useEffect(() => {
+    youtubeEmbedsRef.current = youtubeEmbeds;
+  }, [youtubeEmbeds]);
+
+  useEffect(() => {
+    spotifyEmbedsRef.current = spotifyEmbeds;
+  }, [spotifyEmbeds]);
+
+  const toggleTraceExpansion = (index: number) => {
+    setExpandedTraces((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || streamingRef.current) return;
@@ -262,13 +291,28 @@ export default function Home() {
 
     const userMessage = input.trim();
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+
+    // Finalize embeds and trace events on the last assistant message before adding new messages
+    setMessages((prev) => {
+      const updated = [...prev];
+      const lastAssistantIdx = updated.map(m => m.role).lastIndexOf("assistant");
+      if (lastAssistantIdx >= 0) {
+        updated[lastAssistantIdx] = {
+          ...updated[lastAssistantIdx],
+          youtubeEmbeds: youtubeEmbeds.length > 0 ? youtubeEmbeds : updated[lastAssistantIdx].youtubeEmbeds,
+          spotifyEmbeds: spotifyEmbeds.length > 0 ? spotifyEmbeds : updated[lastAssistantIdx].spotifyEmbeds,
+          traceEvents: traceEvents.length > 0 ? traceEvents : updated[lastAssistantIdx].traceEvents,
+        };
+      }
+      return [...updated, { role: "user", content: userMessage }];
+    });
+
     setIsStreaming(true);
     setTraceEvents([]);
     setYoutubeEmbeds([]);
     setSpotifyEmbeds([]);
 
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    setMessages((prev) => [...prev, { role: "assistant", content: "", youtubeEmbeds: [], spotifyEmbeds: [], traceEvents: [] }]);
 
     abortControllerRef.current = new AbortController();
 
@@ -308,35 +352,31 @@ export default function Home() {
               const data = JSON.parse(line.slice(6));
 
               if (data.type === "node_start") {
-                setTraceEvents((prev) => [
-                  ...prev,
-                  {
-                    id: `node-${data.node}-${Date.now()}`,
-                    type: "node",
-                    name: data.node,
-                    status: "running",
-                    timestamp: Date.now(),
-                  },
-                ]);
+                const newEvent: TraceEvent = {
+                  id: `node-${data.node}-${Date.now()}`,
+                  type: "node",
+                  name: data.node,
+                  status: "running",
+                  timestamp: Date.now(),
+                };
+                setTraceEvents((prev) => [...prev, newEvent]);
               } else if (data.type === "tool_call") {
-                setTraceEvents((prev) => [
-                  ...prev,
-                  {
-                    id: `tool-${data.tool}-${Date.now()}`,
-                    type: "tool",
-                    name: data.tool,
-                    status: "running",
-                    timestamp: Date.now(),
-                    args: data.args,
-                  },
-                ]);
+                const newEvent: TraceEvent = {
+                  id: `tool-${data.tool}-${Date.now()}`,
+                  type: "tool",
+                  name: data.tool,
+                  status: "running",
+                  timestamp: Date.now(),
+                  args: data.args,
+                };
+                setTraceEvents((prev) => [...prev, newEvent]);
               } else if (data.type === "tool_result") {
                 setTraceEvents((prev) =>
                   prev.map((event) =>
                     event.type === "tool" &&
                     event.name === data.tool &&
                     event.status === "running"
-                      ? { ...event, status: "complete", result: data.result }
+                      ? { ...event, status: "complete" as const, result: data.result }
                       : event
                   )
                 );
@@ -356,30 +396,37 @@ export default function Home() {
                     event.type === "node" &&
                     event.name === data.node &&
                     event.status === "running"
-                      ? { ...event, status: "complete" }
+                      ? { ...event, status: "complete" as const }
                       : event
                   )
                 );
               } else if (data.type === "youtube_embed") {
-                setYoutubeEmbeds((prev) => [
-                  ...prev,
-                  {
-                    videoId: data.video_id,
-                    title: data.title,
-                    channel: data.channel || "",
-                  },
-                ]);
+                const newEmbed = {
+                  videoId: data.video_id,
+                  title: data.title,
+                  channel: data.channel || "",
+                };
+                setYoutubeEmbeds((prev) => [...prev, newEmbed]);
               } else if (data.type === "spotify_embed") {
-                setSpotifyEmbeds((prev) => [
-                  ...prev,
-                  {
-                    contentType: data.content_type,
-                    id: data.id,
-                    name: data.name,
-                    artist: data.artist || "",
-                  },
-                ]);
+                const newEmbed = {
+                  contentType: data.content_type as SpotifyEmbed["contentType"],
+                  id: data.id,
+                  name: data.name,
+                  artist: data.artist || "",
+                };
+                setSpotifyEmbeds((prev) => [...prev, newEmbed]);
               } else if (data.type === "done") {
+                // Finalize trace events and embeds on the message
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const lastMessage = updated[updated.length - 1];
+                  if (lastMessage?.role === "assistant") {
+                    lastMessage.traceEvents = [...traceEventsRef.current];
+                    lastMessage.youtubeEmbeds = [...youtubeEmbedsRef.current];
+                    lastMessage.spotifyEmbeds = [...spotifyEmbedsRef.current];
+                  }
+                  return updated;
+                });
                 setIsStreaming(false);
               }
             } catch {
@@ -473,16 +520,27 @@ export default function Home() {
             <div className="space-y-4">
               {messages.map((message, index) => (
                 <div key={index} className="space-y-2">
-                  {/* Execution trace */}
-                  {message.role === "assistant" &&
-                    index === messages.length - 1 &&
-                    traceEvents.length > 0 && (
+                  {/* Execution trace - collapsible after completion */}
+                  {(() => {
+                    const isCurrentlyStreaming = isStreaming && index === messages.length - 1;
+                    // During streaming: use global traceEvents; after: use message.traceEvents
+                    const currentTraces = isCurrentlyStreaming ? traceEvents : message.traceEvents;
+                    const toolCount = currentTraces?.filter((e) => e.type === "tool").length || 0;
+                    const isExpanded = expandedTraces.has(index) || isCurrentlyStreaming;
+
+                    if (message.role !== "assistant" || !currentTraces || currentTraces.length === 0) {
+                      return null;
+                    }
+
+                    return (
                       <div className="space-y-2 border-l-2 border-[#8b5cf6]/50 pl-3">
-                        <span className="text-xs text-[#8b7355]">[TRACE]</span>
-                        
-                        {/* Compact trace flow */}
+                        <span className="text-xs text-[#8b7355]">
+                          [TRACE] {isExpanded ? "▼" : "▶"} {toolCount} tool{toolCount !== 1 ? "s" : ""}
+                        </span>
+
+                        {/* Compact trace flow - always visible */}
                         <div className="flex flex-wrap items-center gap-1 text-xs">
-                          {traceEvents.map((event, i) => (
+                          {currentTraces.map((event, i) => (
                             <div
                               key={event.id}
                               className="flex items-center"
@@ -526,54 +584,63 @@ export default function Home() {
                           ))}
                         </div>
 
-                        {/* Tool details panel */}
-                        {traceEvents.some((e) => e.type === "tool") && (
-                          <div className="mt-2 space-y-1.5">
-                            {traceEvents
-                              .filter((e) => e.type === "tool")
-                              .map((tool) => (
-                                <div
-                                  key={tool.id}
-                                  className="rounded border border-[#06b6d4]/30 bg-[#06b6d4]/5 p-2 text-xs"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-lg">
-                                      {TOOL_ICONS[tool.name] || TOOL_ICONS.default}
-                                    </span>
-                                    <span className="font-semibold text-[#06b6d4]">
-                                      {tool.name}
-                                    </span>
-                                    {tool.status === "running" ? (
-                                      <span className="flex items-center gap-1 text-[#f59e0b]">
-                                        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#f59e0b]" />
-                                        executing...
-                                      </span>
-                                    ) : (
-                                      <span className="text-[#22c55e]">✓ complete</span>
-                                    )}
-                                  </div>
-                                  {tool.args && (
-                                    <div className="mt-1 text-[#8b7355]">
-                                      <span className="text-[#a78bfa]">args:</span>{" "}
-                                      <span className="text-[#e8dcc4]">
-                                        {formatToolArgs(tool.args)}
-                                      </span>
-                                    </div>
-                                  )}
-                                  {tool.result && (
-                                    <div className="mt-1 text-[#8b7355]">
-                                      <span className="text-[#a78bfa]">result:</span>{" "}
-                                      <span className="text-[#22c55e]">
-                                        &quot;{tool.result}&quot;
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                          </div>
+                        {/* Tool details panel - collapsible */}
+                        {currentTraces.some((e) => e.type === "tool") && (
+                          <button
+                            onClick={() => toggleTraceExpansion(index)}
+                            className="text-xs text-[#8b7355] hover:text-[#d4a574] cursor-pointer"
+                          >
+                            {isExpanded ? "Hide" : "Show"} details
+                          </button>
                         )}
+                        {isExpanded && currentTraces.some((e) => e.type === "tool") && (
+                              <div className="mt-2 space-y-1.5">
+                                {currentTraces
+                                  .filter((e) => e.type === "tool")
+                                  .map((tool) => (
+                                    <div
+                                      key={tool.id}
+                                      className="rounded border border-[#06b6d4]/30 bg-[#06b6d4]/5 p-2 text-xs"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-lg">
+                                          {TOOL_ICONS[tool.name] || TOOL_ICONS.default}
+                                        </span>
+                                        <span className="font-semibold text-[#06b6d4]">
+                                          {tool.name}
+                                        </span>
+                                        {tool.status === "running" ? (
+                                          <span className="flex items-center gap-1 text-[#f59e0b]">
+                                            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[#f59e0b]" />
+                                            executing...
+                                          </span>
+                                        ) : (
+                                          <span className="text-[#22c55e]">✓ complete</span>
+                                        )}
+                                      </div>
+                                      {tool.args && (
+                                        <div className="mt-1 text-[#8b7355]">
+                                          <span className="text-[#a78bfa]">args:</span>{" "}
+                                          <span className="text-[#e8dcc4]">
+                                            {formatToolArgs(tool.args)}
+                                          </span>
+                                        </div>
+                                      )}
+                                      {tool.result && (
+                                        <div className="mt-1 text-[#8b7355]">
+                                          <span className="text-[#a78bfa]">result:</span>{" "}
+                                          <span className="text-[#22c55e]">
+                                            &quot;{tool.result}&quot;
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                              </div>
+                            )}
                       </div>
-                    )}
+                    );
+                  })()}
 
                   {/* Message */}
                   <div
@@ -609,11 +676,13 @@ export default function Home() {
                     </div>
 
                     {/* YouTube embeds - render below assistant message */}
-                    {message.role === "assistant" &&
-                      index === messages.length - 1 &&
-                      youtubeEmbeds.length > 0 && (
+                    {(() => {
+                      const isCurrentlyStreaming = isStreaming && index === messages.length - 1;
+                      const currentYoutubeEmbeds = isCurrentlyStreaming ? youtubeEmbeds : message.youtubeEmbeds;
+                      if (message.role !== "assistant" || !currentYoutubeEmbeds || currentYoutubeEmbeds.length === 0) return null;
+                      return (
                         <div className="mt-4 space-y-4">
-                          {youtubeEmbeds.map((embed, embedIndex) => (
+                          {currentYoutubeEmbeds.map((embed, embedIndex) => (
                             <div key={embedIndex} className="space-y-1">
                               <div className="text-xs text-[#8b7355]">
                                 🎵 {embed.title}
@@ -634,14 +703,17 @@ export default function Home() {
                             </div>
                           ))}
                         </div>
-                      )}
+                      );
+                    })()}
 
                     {/* Spotify embeds - render below assistant message */}
-                    {message.role === "assistant" &&
-                      index === messages.length - 1 &&
-                      spotifyEmbeds.length > 0 && (
+                    {(() => {
+                      const isCurrentlyStreaming = isStreaming && index === messages.length - 1;
+                      const currentSpotifyEmbeds = isCurrentlyStreaming ? spotifyEmbeds : message.spotifyEmbeds;
+                      if (message.role !== "assistant" || !currentSpotifyEmbeds || currentSpotifyEmbeds.length === 0) return null;
+                      return (
                         <div className="mt-4 space-y-4">
-                          {spotifyEmbeds.map((embed, embedIndex) => (
+                          {currentSpotifyEmbeds.map((embed, embedIndex) => (
                             <div key={embedIndex} className="space-y-1">
                               <div className="text-xs text-[#8b7355]">
                                 🎧 {embed.name}
@@ -661,7 +733,8 @@ export default function Home() {
                             </div>
                           ))}
                         </div>
-                      )}
+                      );
+                    })()}
                   </div>
                 </div>
               ))}
