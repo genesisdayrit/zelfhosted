@@ -1,0 +1,6 @@
+{
+    "scripts": {
+        "setup": "ln -s \"$CONDUCTOR_ROOT_PATH/server/fastapi/.env\" server/fastapi/.env && ln -s \"$CONDUCTOR_ROOT_PATH/client/mobile/.env\" client/mobile/.env && (cd client/nextjs && npm install) && (cd client/mobile && npm install)",
+        "run": "(cd server/fastapi && uv run uvicorn main:app --reload) & (cd client/nextjs && npm run dev) & (cd client/mobile && npx expo start)"
+    }
+}
