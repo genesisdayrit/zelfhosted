@@ -15,6 +15,7 @@ import {
   Image,
 } from 'react-native';
 import YoutubePlayer from 'react-native-youtube-iframe';
+import { WebView } from 'react-native-webview';
 
 // API URL from environment variable, fallback to localhost for web dev
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
@@ -51,6 +52,7 @@ const TOOL_ICONS: Record<string, string> = {
   get_arxiv_articles: '📚',
   get_latest_photos: '📷',
   search_youtube_song: '🎵',
+  search_spotify: '🎧',
   exa_search: '🔍',
   exa_find_similar: '🔗',
   exa_answer: '💡',
@@ -80,6 +82,13 @@ interface YouTubeEmbed {
   videoId: string;
   title: string;
   channel: string;
+}
+
+interface SpotifyEmbed {
+  contentType: 'track' | 'artist' | 'album' | 'playlist';
+  id: string;
+  name: string;
+  artist: string;
 }
 
 // Terminal-styled markdown renderer
@@ -223,6 +232,7 @@ export default function App() {
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [youtubeEmbeds, setYoutubeEmbeds] = useState<YouTubeEmbed[]>([]);
+  const [spotifyEmbeds, setSpotifyEmbeds] = useState<SpotifyEmbed[]>([]);
   const listRef = useRef<FlatList>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -259,6 +269,7 @@ export default function App() {
     setIsStreaming(true);
     setTraceEvents([]);
     setYoutubeEmbeds([]);
+    setSpotifyEmbeds([]);
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
     abortControllerRef.current = new AbortController();
@@ -357,6 +368,16 @@ export default function App() {
                     channel: data.channel || '',
                   },
                 ]);
+              } else if (data.type === 'spotify_embed') {
+                setSpotifyEmbeds(prev => [
+                  ...prev,
+                  {
+                    contentType: data.content_type,
+                    id: data.id,
+                    name: data.name,
+                    artist: data.artist || '',
+                  },
+                ]);
               } else if (data.type === 'done') {
                 setIsStreaming(false);
               }
@@ -393,6 +414,7 @@ export default function App() {
     setIsStreaming(false);
     setTraceEvents([]);
     setYoutubeEmbeds([]);
+    setSpotifyEmbeds([]);
   };
 
   const renderTraceEvents = () => {
@@ -473,6 +495,34 @@ export default function App() {
     );
   };
 
+  const renderSpotifyEmbeds = () => {
+    if (spotifyEmbeds.length === 0) return null;
+
+    return (
+      <View style={styles.spotifyContainer}>
+        {spotifyEmbeds.map((embed, i) => (
+          <View key={i} style={styles.spotifyEmbed}>
+            <Text style={styles.spotifyTitle}>
+              🎧 {embed.name}
+              {embed.artist && (
+                <Text style={styles.spotifyArtist}> • {embed.artist}</Text>
+              )}
+            </Text>
+            <View style={[styles.spotifyPlayer, { height: embed.contentType === 'track' ? 152 : 352 }]}>
+              <WebView
+                source={{ uri: `https://open.spotify.com/embed/${embed.contentType}/${embed.id}?utm_source=generator&theme=0` }}
+                style={{ borderRadius: 8, backgroundColor: 'transparent' }}
+                scrollEnabled={false}
+                allowsInlineMediaPlayback={true}
+                mediaPlaybackRequiresUserAction={false}
+              />
+            </View>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
   const renderMessage = ({ item, index }: { item: Message; index: number }) => {
     const isUser = item.role === 'user';
     const isLastMessage = index === messages.length - 1;
@@ -503,6 +553,9 @@ export default function App() {
 
           {/* YouTube embeds below assistant message */}
           {!isUser && isLastMessage && renderYoutubeEmbeds()}
+
+          {/* Spotify embeds below assistant message */}
+          {!isUser && isLastMessage && renderSpotifyEmbeds()}
         </View>
       </View>
     );
@@ -846,6 +899,29 @@ const styles = StyleSheet.create({
     color: COLORS.sand400,
   },
   youtubePlayer: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: `${COLORS.purple500}4D`,
+  },
+
+  // Spotify embeds
+  spotifyContainer: {
+    marginTop: 16,
+  },
+  spotifyEmbed: {
+    marginBottom: 12,
+  },
+  spotifyTitle: {
+    color: COLORS.sand400,
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    marginBottom: 8,
+  },
+  spotifyArtist: {
+    color: COLORS.sand400,
+  },
+  spotifyPlayer: {
     borderRadius: 8,
     overflow: 'hidden',
     borderWidth: 1,

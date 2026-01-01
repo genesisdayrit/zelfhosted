@@ -30,6 +30,13 @@ interface YouTubeEmbed {
   channel: string;
 }
 
+interface SpotifyEmbed {
+  contentType: "track" | "artist" | "album" | "playlist";
+  id: string;
+  name: string;
+  artist: string;
+}
+
 // Tool icons mapping
 const TOOL_ICONS: Record<string, string> = {
   get_weather: "🌤️",
@@ -37,6 +44,7 @@ const TOOL_ICONS: Record<string, string> = {
   get_arxiv_articles: "📚",
   get_latest_photos: "📷",
   search_youtube_song: "🎵",
+  search_spotify: "🎧",
   exa_search: "🔍",
   exa_find_similar: "🔗",
   exa_answer: "💡",
@@ -207,6 +215,7 @@ export default function Home() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [youtubeEmbeds, setYoutubeEmbeds] = useState<YouTubeEmbed[]>([]);
+  const [spotifyEmbeds, setSpotifyEmbeds] = useState<SpotifyEmbed[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
@@ -257,6 +266,7 @@ export default function Home() {
     setIsStreaming(true);
     setTraceEvents([]);
     setYoutubeEmbeds([]);
+    setSpotifyEmbeds([]);
 
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
@@ -359,6 +369,16 @@ export default function Home() {
                     channel: data.channel || "",
                   },
                 ]);
+              } else if (data.type === "spotify_embed") {
+                setSpotifyEmbeds((prev) => [
+                  ...prev,
+                  {
+                    contentType: data.content_type,
+                    id: data.id,
+                    name: data.name,
+                    artist: data.artist || "",
+                  },
+                ]);
               } else if (data.type === "done") {
                 setIsStreaming(false);
               }
@@ -416,6 +436,7 @@ export default function Home() {
                 setMessages([]);
                 setTraceEvents([]);
                 setYoutubeEmbeds([]);
+                setSpotifyEmbeds([]);
                 setInput("");
                 setIsStreaming(false);
                 streamingRef.current = false;
@@ -608,6 +629,33 @@ export default function Home() {
                                 frameBorder="0"
                                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                                 allowFullScreen
+                                className="rounded-lg border border-[#8b5cf6]/30 shadow-lg max-w-md"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                    {/* Spotify embeds - render below assistant message */}
+                    {message.role === "assistant" &&
+                      index === messages.length - 1 &&
+                      spotifyEmbeds.length > 0 && (
+                        <div className="mt-4 space-y-4">
+                          {spotifyEmbeds.map((embed, embedIndex) => (
+                            <div key={embedIndex} className="space-y-1">
+                              <div className="text-xs text-[#8b7355]">
+                                🎧 {embed.name}
+                                {embed.artist && (
+                                  <span className="text-[#6b5545]"> • {embed.artist}</span>
+                                )}
+                              </div>
+                              <iframe
+                                src={`https://open.spotify.com/embed/${embed.contentType}/${embed.id}?utm_source=generator&theme=0`}
+                                width="100%"
+                                height={embed.contentType === "track" ? 152 : 352}
+                                frameBorder="0"
+                                allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                                loading="lazy"
                                 className="rounded-lg border border-[#8b5cf6]/30 shadow-lg max-w-md"
                               />
                             </div>

@@ -88,6 +88,26 @@ def tool_node(state: State):
                     result_for_llm = result_data["error"]
             except json.JSONDecodeError:
                 pass  # Fall back to raw result
+
+        # Handle Spotify tool specially - stream embed events for each result
+        if tool_name == "search_spotify":
+            try:
+                result_data = json.loads(result)
+                # Stream embed events for each result
+                for item in result_data.get("results", []):
+                    writer({
+                        "type": "spotify_embed",
+                        "content_type": item["type"],
+                        "id": item["id"],
+                        "name": item["name"],
+                        "artist": item.get("artist", item.get("owner", "")),
+                    })
+                # Give LLM just the text summary
+                result_for_llm = result_data.get("text", str(result))
+                if result_data.get("error"):
+                    result_for_llm = result_data["error"]
+            except json.JSONDecodeError:
+                pass  # Fall back to raw result
         
         writer({
             "type": "tool_result",
