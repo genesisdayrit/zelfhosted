@@ -23,3 +23,6 @@ __pycache__/
 
 # directory with 
 server/fastapi/tools/data/
+
+# Context / research notes
+.context/
