@@ -51,6 +51,8 @@ async def chat(request: ChatRequest):
         "messages": [{"role": m.role, "content": m.content} for m in request.messages],
         "user_location": request.location.model_dump() if request.location else None,
         "iteration_count": 0,
+        "supervisor_turns": 0,
+        "supervisor_decision": None,
     }
     result = graph.invoke(initial_state)
     ai_message = result["messages"][-1]
@@ -64,6 +66,8 @@ async def chat_stream(request: ChatRequest):
         "messages": [{"role": m.role, "content": m.content} for m in request.messages],
         "user_location": request.location.model_dump() if request.location else None,
         "iteration_count": 0,
+        "supervisor_turns": 0,
+        "supervisor_decision": None,
     }
 
     async def event_generator():

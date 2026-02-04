@@ -15,12 +15,18 @@ from graph import (
     should_continue,
     tool_node,
     chatbot,
+    preprocessor,
+    supervisor,
+    supervisor_should_continue,
+    exit_node,
     MAX_ITERATIONS,
+    MAX_SUPERVISOR_TURNS,
     MAX_TOOL_RESULT_LENGTH,
     SYSTEM_PROMPT,
+    SUPERVISOR_PROMPT,
     State,
 )
-from tests.conftest import FakeWriter, make_ai_message
+from tests.conftest import FakeWriter, make_ai_message, make_state
 
 
 # ---------------------------------------------------------------------------
@@ -136,28 +142,38 @@ class TestPostProcessToolResult:
 class TestShouldContinue:
     def test_routes_to_tools_when_tool_calls_present(self):
         msg = make_ai_message(tool_calls=[{"id": "1", "name": "get_weather", "args": {}}])
-        state: State = {"messages": [msg], "user_location": None, "iteration_count": 0}
+        state = make_state(messages=[msg])
         assert should_continue(state) == "tool_node"
 
-    def test_routes_to_end_when_no_tool_calls(self):
+    def test_routes_to_exit_when_no_tool_calls_and_no_tools_used(self):
         msg = make_ai_message(content="Hello!")
-        state: State = {"messages": [msg], "user_location": None, "iteration_count": 0}
-        assert should_continue(state) == "__end__"
+        state = make_state(messages=[msg], iteration_count=0)
+        assert should_continue(state) == "exit"
+
+    def test_routes_to_supervisor_after_tool_use(self):
+        msg = make_ai_message(content="The weather is sunny.")
+        state = make_state(messages=[msg], iteration_count=1, supervisor_turns=0)
+        assert should_continue(state) == "supervisor"
+
+    def test_skips_supervisor_when_turns_exceeded(self):
+        msg = make_ai_message(content="Done.")
+        state = make_state(messages=[msg], iteration_count=1, supervisor_turns=MAX_SUPERVISOR_TURNS + 1)
+        assert should_continue(state) == "exit"
 
     def test_iteration_guard_stops_at_max(self):
         msg = make_ai_message(tool_calls=[{"id": "1", "name": "get_weather", "args": {}}])
-        state: State = {"messages": [msg], "user_location": None, "iteration_count": MAX_ITERATIONS}
-        assert should_continue(state) == "__end__"
+        state = make_state(messages=[msg], iteration_count=MAX_ITERATIONS)
+        assert should_continue(state) == "exit"
 
     def test_iteration_guard_allows_below_max(self):
         msg = make_ai_message(tool_calls=[{"id": "1", "name": "get_weather", "args": {}}])
-        state: State = {"messages": [msg], "user_location": None, "iteration_count": MAX_ITERATIONS - 1}
+        state = make_state(messages=[msg], iteration_count=MAX_ITERATIONS - 1)
         assert should_continue(state) == "tool_node"
 
     def test_iteration_guard_stops_above_max(self):
         msg = make_ai_message(tool_calls=[{"id": "1", "name": "get_weather", "args": {}}])
-        state: State = {"messages": [msg], "user_location": None, "iteration_count": MAX_ITERATIONS + 5}
-        assert should_continue(state) == "__end__"
+        state = make_state(messages=[msg], iteration_count=MAX_ITERATIONS + 5)
+        assert should_continue(state) == "exit"
 
     def test_defaults_iteration_count_to_zero(self):
         """State without iteration_count should behave as count=0."""
@@ -366,3 +382,158 @@ class TestChatbot:
         start_events = mock_stream_writer.events_of_type("node_start")
         assert len(start_events) == 1
         assert start_events[0]["node"] == "chatbot"
+
+
+# ---------------------------------------------------------------------------
+# preprocessor
+# ---------------------------------------------------------------------------
+
+class TestPreprocessor:
+    def test_returns_empty_dict(self, mock_stream_writer):
+        state = make_state(messages=[HumanMessage(content="hi")])
+        result = preprocessor(state)
+        assert result == {}
+
+    def test_streams_node_start_event(self, mock_stream_writer):
+        state = make_state(messages=[HumanMessage(content="hi")])
+        preprocessor(state)
+        start_events = mock_stream_writer.events_of_type("node_start")
+        assert len(start_events) == 1
+        assert start_events[0]["node"] == "preprocessor"
+
+
+# ---------------------------------------------------------------------------
+# supervisor
+# ---------------------------------------------------------------------------
+
+class TestSupervisor:
+    def test_pass_evaluation(self, mock_stream_writer):
+        fake_eval = AIMessage(content="PASS")
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = fake_eval
+
+        with patch("graph.llm", mock_llm):
+            state = make_state(
+                messages=[HumanMessage(content="weather?"), AIMessage(content="It's sunny.")],
+                supervisor_turns=0,
+            )
+            result = supervisor(state)
+
+        assert result["supervisor_decision"] == "PASS"
+        assert result["supervisor_turns"] == 1
+
+    def test_retry_evaluation(self, mock_stream_writer):
+        fake_eval = AIMessage(content="RETRY - response is incomplete")
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = fake_eval
+
+        with patch("graph.llm", mock_llm):
+            state = make_state(
+                messages=[HumanMessage(content="weather?"), AIMessage(content="...")],
+                supervisor_turns=0,
+            )
+            result = supervisor(state)
+
+        assert result["supervisor_decision"] == "RETRY"
+        assert result["supervisor_turns"] == 1
+
+    def test_increments_supervisor_turns(self, mock_stream_writer):
+        fake_eval = AIMessage(content="PASS")
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = fake_eval
+
+        with patch("graph.llm", mock_llm):
+            state = make_state(
+                messages=[HumanMessage(content="hi"), AIMessage(content="hello")],
+                supervisor_turns=2,
+            )
+            result = supervisor(state)
+
+        assert result["supervisor_turns"] == 3
+
+    def test_uses_base_llm_not_tools(self, mock_stream_writer):
+        fake_eval = AIMessage(content="PASS")
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = fake_eval
+
+        with patch("graph.llm", mock_llm) as patched:
+            state = make_state(
+                messages=[HumanMessage(content="hi"), AIMessage(content="hello")],
+            )
+            supervisor(state)
+
+        patched.invoke.assert_called_once()
+
+    def test_streams_evaluation_event(self, mock_stream_writer):
+        fake_eval = AIMessage(content="PASS")
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = fake_eval
+
+        with patch("graph.llm", mock_llm):
+            state = make_state(
+                messages=[HumanMessage(content="hi"), AIMessage(content="hello")],
+            )
+            supervisor(state)
+
+        eval_events = mock_stream_writer.events_of_type("supervisor_evaluation")
+        assert len(eval_events) == 1
+        assert eval_events[0]["decision"] == "PASS"
+
+    def test_injects_supervisor_prompt(self, mock_stream_writer):
+        fake_eval = AIMessage(content="PASS")
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = fake_eval
+
+        with patch("graph.llm", mock_llm):
+            state = make_state(
+                messages=[HumanMessage(content="hi"), AIMessage(content="hello")],
+            )
+            supervisor(state)
+
+        invoked_messages = mock_llm.invoke.call_args[0][0]
+        assert isinstance(invoked_messages[0], SystemMessage)
+        assert invoked_messages[0].content == SUPERVISOR_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# supervisor_should_continue
+# ---------------------------------------------------------------------------
+
+class TestSupervisorShouldContinue:
+    def test_retry_routes_to_chatbot(self):
+        state = make_state(supervisor_turns=1, supervisor_decision="RETRY")
+        assert supervisor_should_continue(state) == "chatbot"
+
+    def test_pass_routes_to_exit(self):
+        state = make_state(supervisor_turns=1, supervisor_decision="PASS")
+        assert supervisor_should_continue(state) == "exit"
+
+    def test_exceeds_max_turns_forces_exit(self):
+        state = make_state(supervisor_turns=MAX_SUPERVISOR_TURNS + 1, supervisor_decision="RETRY")
+        assert supervisor_should_continue(state) == "exit"
+
+    def test_at_max_turns_allows_decision(self):
+        state = make_state(supervisor_turns=MAX_SUPERVISOR_TURNS, supervisor_decision="RETRY")
+        assert supervisor_should_continue(state) == "chatbot"
+
+    def test_none_decision_routes_to_exit(self):
+        state = make_state(supervisor_turns=0, supervisor_decision=None)
+        assert supervisor_should_continue(state) == "exit"
+
+
+# ---------------------------------------------------------------------------
+# exit_node
+# ---------------------------------------------------------------------------
+
+class TestExitNode:
+    def test_returns_empty_dict(self, mock_stream_writer):
+        state = make_state(messages=[AIMessage(content="done")])
+        result = exit_node(state)
+        assert result == {}
+
+    def test_streams_node_start_event(self, mock_stream_writer):
+        state = make_state(messages=[AIMessage(content="done")])
+        exit_node(state)
+        start_events = mock_stream_writer.events_of_type("node_start")
+        assert len(start_events) == 1
+        assert start_events[0]["node"] == "exit"
