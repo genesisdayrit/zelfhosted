@@ -19,6 +19,8 @@ class State(TypedDict):
     messages: Annotated[list, add_messages]
     user_location: dict | None  # Optional {lat, lon} from browser geolocation
     iteration_count: int  # Track tool call iterations to prevent infinite loops
+    supervisor_turns: int  # Track supervisor evaluations (capped at MAX_SUPERVISOR_TURNS)
+    supervisor_decision: str | None  # "PASS" or "RETRY" from last supervisor evaluation
 
 
 # Initialize the LLM with tools bound
@@ -28,6 +30,7 @@ llm_with_tools = llm.bind_tools(tools)
 # Configuration
 MAX_ITERATIONS = 8
 MAX_TOOL_RESULT_LENGTH = 4000
+MAX_SUPERVISOR_TURNS = 1
 
 SYSTEM_PROMPT = """You are a helpful personal assistant with access to various tools.
 
@@ -38,6 +41,26 @@ Response formatting guidelines:
 - Do not mention tools, internal processes, or iteration counts.
 - For music/video requests, give a brief response. Embeds display automatically.
 - For data-heavy responses (weather, subway), use structured formatting."""
+
+SUPERVISOR_PROMPT = """You are a response quality evaluator. Given the conversation and the assistant's latest response, determine if the response adequately addresses the user's request.
+
+Evaluate:
+1. Does the response directly answer the question asked?
+2. Is the response complete (not cut off or missing key information)?
+3. If tools were used, are the results properly incorporated?
+
+Respond with ONLY one of:
+- "PASS" if the response is adequate
+- "RETRY" if the response needs improvement (explain briefly why after the word RETRY)
+
+Do not provide the improved response yourself. Just evaluate."""
+
+
+def preprocessor(state: State):
+    """Prepare context for the chatbot. Extensibility point for future enrichment."""
+    writer = get_stream_writer()
+    writer({"type": "node_start", "node": "preprocessor"})
+    return {}
 
 
 def chatbot(state: State):
@@ -157,25 +180,87 @@ def tool_node(state: State):
     }
 
 
-def should_continue(state: State) -> Literal["tool_node", "__end__"]:
-    """Route to tool_node if LLM made tool calls, with iteration safety guard."""
+def supervisor(state: State):
+    """Evaluate chatbot response quality. May trigger another chatbot pass."""
+    writer = get_stream_writer()
+    writer({"type": "node_start", "node": "supervisor"})
+
+    messages = state["messages"]
+    eval_messages = [
+        SystemMessage(content=SUPERVISOR_PROMPT),
+        *messages,
+    ]
+
+    evaluation = llm.invoke(eval_messages)
+    decision = "RETRY" if evaluation.content.strip().upper().startswith("RETRY") else "PASS"
+
+    current_turns = state.get("supervisor_turns", 0)
+
+    writer({
+        "type": "supervisor_evaluation",
+        "decision": decision,
+        "detail": evaluation.content,
+        "turn": current_turns + 1,
+    })
+
+    return {
+        "supervisor_turns": current_turns + 1,
+        "supervisor_decision": decision,
+    }
+
+
+def supervisor_should_continue(state: State) -> Literal["chatbot", "exit"]:
+    """Route based on supervisor evaluation. Cap at MAX_SUPERVISOR_TURNS."""
+    if state.get("supervisor_turns", 0) > MAX_SUPERVISOR_TURNS:
+        return "exit"
+    if state.get("supervisor_decision") == "RETRY":
+        return "chatbot"
+    return "exit"
+
+
+def exit_node(state: State):
+    """Finalization point. Extensibility hook for future cleanup logic."""
+    writer = get_stream_writer()
+    writer({"type": "node_start", "node": "exit"})
+    return {}
+
+
+def should_continue(state: State) -> Literal["tool_node", "supervisor", "exit"]:
+    """Route chatbot output: tools, supervisor review, or direct exit."""
     # Safety guard: force termination after MAX_ITERATIONS tool loops
     if state.get("iteration_count", 0) >= MAX_ITERATIONS:
-        return "__end__"
+        return "exit"
+
     last_message = state["messages"][-1]
+
+    # If LLM wants to call tools, route to tool_node
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tool_node"
-    return "__end__"
+
+    # Route to supervisor when tools were used (response synthesizes tool results)
+    # and supervisor hasn't exceeded its turn cap
+    if (state.get("iteration_count", 0) > 0
+            and state.get("supervisor_turns", 0) <= MAX_SUPERVISOR_TURNS):
+        return "supervisor"
+
+    # Simple responses (no tools used) go straight to exit
+    return "exit"
 
 
 # Build the graph
 graph_builder = StateGraph(State)
+graph_builder.add_node("preprocessor", preprocessor)
 graph_builder.add_node("chatbot", chatbot)
 graph_builder.add_node("tool_node", tool_node)
+graph_builder.add_node("supervisor", supervisor)
+graph_builder.add_node("exit", exit_node)
 
-graph_builder.add_edge(START, "chatbot")
-graph_builder.add_conditional_edges("chatbot", should_continue, ["tool_node", "__end__"])
+graph_builder.add_edge(START, "preprocessor")
+graph_builder.add_edge("preprocessor", "chatbot")
+graph_builder.add_conditional_edges("chatbot", should_continue, ["tool_node", "supervisor", "exit"])
 graph_builder.add_edge("tool_node", "chatbot")
+graph_builder.add_conditional_edges("supervisor", supervisor_should_continue, ["chatbot", "exit"])
+graph_builder.add_edge("exit", "__end__")
 
 graph = graph_builder.compile()
 

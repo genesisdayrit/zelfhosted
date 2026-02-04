@@ -51,6 +51,8 @@ class TestChatEndpoint:
         call_args = mock_graph.invoke.call_args[0][0]
         assert call_args["iteration_count"] == 0
         assert call_args["user_location"] is None
+        assert call_args["supervisor_turns"] == 0
+        assert call_args["supervisor_decision"] is None
 
     def test_passes_location_when_provided(self):
         fake_result = {"messages": [AIMessage(content="ok")]}

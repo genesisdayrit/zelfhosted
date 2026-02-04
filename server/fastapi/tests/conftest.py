@@ -34,3 +34,15 @@ def make_ai_message(content: str = "", tool_calls: list | None = None) -> AIMess
     if tool_calls:
         msg.tool_calls = tool_calls
     return msg
+
+
+def make_state(messages=None, user_location=None, iteration_count=0,
+               supervisor_turns=0, supervisor_decision=None):
+    """Helper to construct a State dict with defaults for all fields."""
+    return {
+        "messages": messages or [],
+        "user_location": user_location,
+        "iteration_count": iteration_count,
+        "supervisor_turns": supervisor_turns,
+        "supervisor_decision": supervisor_decision,
+    }
