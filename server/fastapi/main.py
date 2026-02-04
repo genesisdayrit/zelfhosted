@@ -11,7 +11,7 @@ from models import ChatRequest, ChatResponse
 app = FastAPI(
     title="Zelfhosted API",
     description="AI-powered backend for Zelfhosted",
-    version="0.2.0",
+    version="0.1.0",
 )
 
 # Default CORS origins (localhost for dev)
@@ -50,9 +50,6 @@ async def chat(request: ChatRequest):
     initial_state = {
         "messages": [{"role": m.role, "content": m.content} for m in request.messages],
         "user_location": request.location.model_dump() if request.location else None,
-        "iteration_count": 0,
-        "should_continue": None,
-        "raw_final_response": None,
     }
     result = graph.invoke(initial_state)
     ai_message = result["messages"][-1]
@@ -65,46 +62,14 @@ async def chat_stream(request: ChatRequest):
     initial_state = {
         "messages": [{"role": m.role, "content": m.content} for m in request.messages],
         "user_location": request.location.model_dump() if request.location else None,
-        "iteration_count": 0,
-        "should_continue": None,
-        "raw_final_response": None,
     }
 
     async def event_generator():
-        iteration_count = 0
-        
         async for mode, chunk in graph.astream(
             initial_state,
             stream_mode=["messages", "updates", "custom"],
         ):
             if mode == "custom":
-                # Pass through custom events (node_start, tool_call, etc.)
-                event_type = chunk.get("type", "")
-                
-                # Track iteration count from events
-                if event_type == "node_start" and chunk.get("node") == "chatbot":
-                    iteration_count = chunk.get("iteration", 0)
-                
-                # Handle post-processor decision event
-                if event_type == "post_processor_decision":
-                    yield f"data: {json.dumps({
-                        "type": "decision",
-                        "continue": chunk.get("should_continue"),
-                        "reasoning": chunk.get("reasoning"),
-                        "iteration": chunk.get("iteration_count"),
-                    })}\n\n"
-                    continue
-                
-                # Handle formatter completion
-                if event_type == "formatter_complete":
-                    yield f"data: {json.dumps({
-                        "type": "formatting_complete",
-                        "raw_length": chunk.get("raw_length"),
-                        "formatted_length": chunk.get("formatted_length"),
-                    })}\n\n"
-                    continue
-                
-                # Pass through other custom events (youtube_embed, spotify_embed, etc.)
                 yield f"data: {json.dumps(chunk)}\n\n"
 
             elif mode == "messages":
@@ -113,7 +78,6 @@ async def chat_stream(request: ChatRequest):
                     event = {
                         "type": "token",
                         "content": msg_chunk.content,
-                        "iteration": iteration_count,
                     }
                     yield f"data: {json.dumps(event)}\n\n"
 
@@ -122,7 +86,6 @@ async def chat_stream(request: ChatRequest):
                     event = {
                         "type": "node_complete",
                         "node": node_name,
-                        "iteration": iteration_count,
                     }
                     yield f"data: {json.dumps(event)}\n\n"
 

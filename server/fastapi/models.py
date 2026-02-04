@@ -20,24 +20,3 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
-
-# --- New models for post-processor and formatter ---
-
-class FormatRequest(BaseModel):
-    """Schema for requesting structured output formatting."""
-    original_response: str
-    format_type: Literal["json", "markdown", "summary"] = "markdown"
-
-
-class FormatResponse(BaseModel):
-    """Schema for formatted output."""
-    formatted_response: str
-    format_type: str
-
-
-class PostProcessorDecision(BaseModel):
-    """Schema for post-processor evaluation result."""
-    should_continue: bool
-    reasoning: str
-    tool_calls_made: int
-    iteration_count: int
